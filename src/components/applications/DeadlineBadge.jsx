@@ -7,6 +7,14 @@ export default function DeadlineBadge({ daysUntil, label }) {
     )
   }
 
+  if (daysUntil < 0) {
+    return (
+      <span className="rounded-full bg-ink-500/10 px-2.5 py-1 text-[11px] text-ink-500">
+        Deadline passed
+      </span>
+    )
+  }
+
   const tone =
     daysUntil <= 14
       ? 'bg-dusty/25 text-[#8B5A5A]'

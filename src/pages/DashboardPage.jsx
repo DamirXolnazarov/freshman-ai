@@ -18,13 +18,16 @@ import {
 } from 'lucide-react'
 import Sidebar from '../components/layout/Sidebar.jsx'
 import Card from '../components/ui/Card.jsx'
-import Button from '../components/ui/Button.jsx'
 import StatCard from '../components/dashboard/StatCard.jsx'
 import JourneyPillars from '../components/dashboard/JourneyPillars.jsx'
+import GapInsightCard from '../components/dashboard/GapInsightCard.jsx'
 import { useUniversityStrategyProgress } from '../hooks/useUniversityStrategyProgress.js'
 import AskFreshmanPanel from '../components/dashboard/AskFreshmanPanel.jsx'
 import { supabase } from '../lib/supabase.js'
 import { computeCompleteness } from '../lib/profileCompleteness.js'
+import { getOpportunityApplications } from '../lib/opportunities.js'
+import { getSavedUniversities } from '../lib/universities.js'
+import { computeGaps, topGap } from '../lib/gapDetection.js'
 
 const STAGE_META = {
   'Academic': { icon: BookOpen, tone: 'navy' },
@@ -39,8 +42,10 @@ const STAGE_ORDER = Object.keys(STAGE_META)
 export default function DashboardPage({ onNavigate, studentId }) {
   const [studentName, setStudentName] = useState('')
   const [profile, setProfile] = useState(null)
-  const [portfolioCount, setPortfolioCount] = useState(0)
+  const [portfolioItems, setPortfolioItems] = useState([])
   const [roadmapSteps, setRoadmapSteps] = useState([])
+  const [oppApplications, setOppApplications] = useState([])
+  const [savedUniversities, setSavedUniversities] = useState([])
   const [loading, setLoading] = useState(true)
 
   const uniStrategy = useUniversityStrategyProgress(studentId)
@@ -48,22 +53,26 @@ export default function DashboardPage({ onNavigate, studentId }) {
   useEffect(() => {
     if (!studentId) return
     async function load() {
-      const [{ data: student }, { data: prof }, { data: portfolio }, { data: roadmap }] = await Promise.all([
+      const [{ data: student }, { data: prof }, { data: portfolio }, { data: roadmap }, opps, savedUnis] = await Promise.all([
         supabase.from('students').select('name').eq('id', studentId).single(),
         supabase.from('student_profile').select('*').eq('student_id', studentId).maybeSingle(),
         supabase.from('portfolio_items').select('*').eq('student_id', studentId).order('created_at', { ascending: false }),
         supabase.from('roadmap_steps').select('*').eq('student_id', studentId).order('order_index'),
+        getOpportunityApplications(studentId),
+        getSavedUniversities(studentId),
       ])
       setStudentName(student?.name || 'Student')
       setProfile(prof)
-      setPortfolioCount(portfolio?.length || 0)
+      setPortfolioItems(portfolio || [])
       setRoadmapSteps(roadmap || [])
+      setOppApplications(opps || [])
+      setSavedUniversities(savedUnis || [])
       setLoading(false)
     }
     load()
   }, [studentId])
 
-  const completeness = computeCompleteness(profile, portfolioCount)
+  const completeness = computeCompleteness(profile, portfolioItems.length)
 
   const pillars = STAGE_ORDER.map((stage) => {
     if (stage === 'University Strategy') {
@@ -89,14 +98,16 @@ export default function DashboardPage({ onNavigate, studentId }) {
     }
   })
 
-  const nextStep = roadmapSteps.find((s) => s.status !== 'done')
+  const oppSubmitted = oppApplications.filter((a) => a.checklist.submitted).length
+  const gaps = computeGaps(profile, portfolioItems, savedUniversities)
+  const primaryGap = topGap(gaps)
 
   const stats = [
     { icon: GraduationCap, iconBg: 'bg-skyline-300/30 text-skyline-600', label: 'Profile completeness', value: `${completeness}%`, detail: '' },
     { icon: Landmark, iconBg: 'bg-navy-900/8 text-navy-900', label: 'Target schools', value: String(profile?.target_schools?.length || 0), detail: (profile?.target_schools || []).slice(0, 3).join(', ') },
     { icon: FileStack, iconBg: 'bg-sage/15 text-sage', label: 'Roadmap steps', value: String(roadmapSteps.length), detail: roadmapSteps.length ? `${roadmapSteps.filter((s) => s.status === 'done').length} done` : 'None yet' },
-    { icon: Star, iconBg: 'bg-gold-500/15 text-gold-600', label: 'Honors', value: String(profile?.honors?.length || 0), detail: '' },
-    { icon: PenLine, iconBg: 'bg-dusty/25 text-[#8B5A5A]', label: 'Portfolio items', value: String(portfolioCount), detail: '' },
+    { icon: Star, iconBg: 'bg-gold-500/15 text-gold-600', label: 'Opportunities tracked', value: String(oppApplications.length), detail: oppApplications.length ? `${oppSubmitted} submitted` : 'None yet' },
+    { icon: PenLine, iconBg: 'bg-dusty/25 text-[#8B5A5A]', label: 'Portfolio items', value: String(portfolioItems.length), detail: '' },
     { icon: CheckSquare, iconBg: 'bg-skyline-300/30 text-skyline-600', label: 'Tasks completed', value: String(roadmapSteps.filter((s) => s.status === 'done').length), detail: '' },
   ]
 
@@ -153,22 +164,10 @@ export default function DashboardPage({ onNavigate, studentId }) {
           </Card>
 
           <section className="mt-5 grid grid-cols-1 gap-3.5 lg:grid-cols-3">
-            <Card className="p-5 shadow-panel bg-gradient-to-br from-parchment-100 to-parchment-50 lg:col-span-2">
-              <p className="text-[11.5px] font-medium tracking-[0.1em] text-gold-600 uppercase">Next best action</p>
-              {nextStep ? (
-                <>
-                  <p className="mt-2 font-serif text-[16.5px] text-navy-900">{nextStep.title}</p>
-                  <p className="mt-1.5 text-[13px] text-ink-700">{nextStep.description}</p>
-                </>
-              ) : (
-                <p className="mt-2 font-serif text-[16.5px] text-navy-900">
-                  {roadmapSteps.length > 0 ? 'All caught up — great work.' : 'Chat with Freshman AI to get started.'}
-                </p>
-              )}
-              <Button variant="primary" size="sm" className="mt-3.5" onClick={() => onNavigate?.(roadmapSteps.length ? 'roadmap' : 'chat')}>
-                {roadmapSteps.length ? 'Go to roadmap' : 'Start chatting'}
-              </Button>
-            </Card>
+            <GapInsightCard
+              gap={primaryGap}
+              onExplore={() => onNavigate?.(primaryGap?.type === 'score' ? 'roadmap' : 'opportunities')}
+            />
 
             <Card className="p-5 shadow-panel">
               <p className="text-[11.5px] font-medium tracking-[0.1em] text-ink-500 uppercase">Target schools</p>
@@ -182,6 +181,19 @@ export default function DashboardPage({ onNavigate, studentId }) {
               </ul>
             </Card>
           </section>
+
+          {gaps.length > 1 && (
+            <Card className="mt-5 p-5 shadow-panel">
+              <p className="text-[11.5px] font-medium tracking-[0.1em] text-ink-500 uppercase">Other gaps worth knowing about</p>
+              <ul className="mt-3 space-y-2.5">
+                {gaps.slice(1, 4).map((g) => (
+                  <li key={g.key} className="text-[13px] text-ink-700">
+                    <span className="font-medium text-ink-900">{g.title}.</span> {g.description}
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
 
           <div className="mt-5 rounded-card bg-navy-950 px-7 py-5">
             <p className="font-serif text-[15px] italic text-parchment-100/90">

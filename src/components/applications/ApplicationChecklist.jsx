@@ -1,21 +1,21 @@
 import { Check } from 'lucide-react'
-import { CHECKLIST_LABELS } from '../../lib/applications.js'
+import { CHECKLIST_LABELS as DEFAULT_LABELS } from '../../lib/applications.js'
 import { celebrateSubmission } from '../../lib/celebrate.js'
 import { notify } from '../../lib/toast.js'
 
-export default function ApplicationChecklist({ checklist, onToggle }) {
+export default function ApplicationChecklist({ checklist, onToggle, labels = DEFAULT_LABELS, submittedKey = 'submitted' }) {
   return (
     <ul className="space-y-1.5">
-      {Object.entries(CHECKLIST_LABELS).map(([key, label]) => {
+      {Object.entries(labels).map(([key, label]) => {
         const done = !!checklist[key]
         return (
           <li key={key}>
             <button
               onClick={() => {
                 onToggle(key)
-                if (key === 'submitted' && !checklist.submitted) {
+                if (key === submittedKey && !checklist[submittedKey]) {
                   celebrateSubmission()
-                  notify.success('Application submitted 🎓')
+                  notify.success('Submitted 🎓')
                 }
               }}
               className="flex w-full items-center gap-2.5 rounded-control px-1.5 py-1 text-left hover:bg-navy-900/[0.03] transition-colors"

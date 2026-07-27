@@ -9,6 +9,7 @@ import UniversitiesPage from './pages/UniversitiesPage.jsx'
 import EssaysPage from './pages/EssaysPage.jsx'
 import ApplicationsPage from './pages/ApplicationsPage.jsx'
 import CommandPalette from './components/CommandPalette.jsx'
+import OpportunitiesPage from './pages/OpportunitiesPage.jsx'
 import { useCommandPalette } from './hooks/useCommandPalette.js'
 import { supabase } from './lib/supabase.js'
 import { ensureStudentRow } from './lib/auth.js'
@@ -95,6 +96,7 @@ export default function App() {
       {page === 'universities' && <UniversitiesPage onNavigate={handleNavigate} studentId={studentId} />}
       {page === 'essays' && <EssaysPage onNavigate={handleNavigate} studentId={studentId} />}
       {page === 'applications' && <ApplicationsPage onNavigate={handleNavigate} studentId={studentId} />}
+      {page === 'opportunities' && <OpportunitiesPage onNavigate={handleNavigate} studentId={studentId} />}
     </>
   )
 }

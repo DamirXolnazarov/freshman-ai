@@ -24,7 +24,8 @@ const NAV = [
   { key: 'calendar', label: 'Calendar', icon: CalendarDays },
 ]
 
-const LIVE_PAGES = new Set(['dashboard', 'chat', 'roadmap', 'portfolio', 'universities', 'essays', 'applications'])
+// Sidebar.jsx
+const LIVE_PAGES = new Set(['dashboard', 'chat', 'roadmap', 'portfolio', 'universities', 'essays', 'applications', 'opportunities'])
 
 export default function Sidebar({
   student = { name: 'Damirbek X.', cohort: 'Class of 2027', completeness: 78 },

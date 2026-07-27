@@ -17,10 +17,14 @@ import {
   chatWithAdvisorStream,
   extractProfileUpdate,
   extractProfileFromDocument,
+  extractExplicitPortfolioRequest,
   enrollmentYearFromGrade,
+  generateRoadmap,
 } from '../lib/groq.js'
 import { extractTextFromPdf } from '../lib/resumeParser.js'
 import { computeCompleteness, roadmapReadinessGaps } from '../lib/profileCompleteness.js'
+import { computeGaps } from '../lib/gapDetection.js'
+import { getSavedUniversities } from '../lib/universities.js'
 import { withRetry } from '../lib/withRetry.js'
 import { supabase } from '../lib/supabase.js'
 
@@ -34,6 +38,7 @@ function nextId() {
 }
 
 const ROADMAP_INTENT = /\b(build|make|create|generate|show)\b.*\broadmap\b|\broadmap\b.*\b(build|make|create|generate)\b/i
+const ADD_TO_PORTFOLIO_INTENT = /\b(add|put|save)\b.*\b(this|that|it)\b.*\bportfolio\b|\bportfolio\b.*\b(add|put|save)\b/i
 
 export default function ChatPage({ onNavigate, studentId, initialName }) {
   const [items, setItems] = useState([])
@@ -182,9 +187,10 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     setItems((prev) => [...prev, userItem])
     saveMessage('user', text)
 
-    const [{ data: profile }, { data: portfolioItems }] = await Promise.all([
+    const [{ data: profile }, { data: portfolioItems }, savedUniversities] = await Promise.all([
       supabase.from('student_profile').select('*').eq('student_id', studentId).maybeSingle(),
       supabase.from('portfolio_items').select('*').eq('student_id', studentId),
+      getSavedUniversities(studentId),
     ])
 
     const gaps = roadmapReadinessGaps(profile, portfolioItems?.length || 0)
@@ -204,8 +210,26 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     setItems((prev) => [...prev, assistantItem])
     saveMessage('assistant', reply)
 
+    // detected gaps feed directly into roadmap generation, so the plan is
+    // explicitly justified by real numbers, not just generically personalized
+    const detectedGaps = computeGaps(profile, portfolioItems || [], savedUniversities || [])
+    const { steps } = await generateRoadmap(profile, portfolioItems, detectedGaps)
+
+    if (steps.length > 0) {
+      await supabase.from('roadmap_steps').delete().eq('student_id', studentId)
+      const rows = steps.map((s, i) => ({
+        student_id: studentId,
+        stage: s.stage,
+        title: s.title,
+        description: s.description,
+        status: 'pending',
+        order_index: i,
+      }))
+      await supabase.from('roadmap_steps').insert(rows)
+    }
+
     setTimeout(() => {
-      onNavigate('roadmap', { autoGenerate: true })
+      onNavigate('roadmap', { autoGenerate: false })
     }, 900)
   }
 
@@ -232,7 +256,12 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     let failed = false
     try {
       full = await withRetry(
-        () => chatWithAdvisorStream(historyForModel, (chunk) => setStreamingText((prev) => prev + chunk)),
+        () =>
+          chatWithAdvisorStream(
+            historyForModel,
+            (chunk) => setStreamingText((prev) => prev + chunk),
+            studentInfo.name !== 'Student' ? studentInfo.name.split(' ')[0] : null
+          ),
         { retries: 2 }
       )
     } catch {
@@ -255,6 +284,21 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     setIsStreaming(false)
     setStreamingText('')
     saveMessage('assistant', full)
+
+    // explicit "add this to my portfolio" request — dedicated, more lenient pass
+    if (ADD_TO_PORTFOLIO_INTENT.test(text)) {
+      const recentUserMessages = [...items, userItem]
+        .filter((it) => it.kind === 'user')
+        .map((it) => it.content)
+
+      const explicit = await extractExplicitPortfolioRequest(recentUserMessages)
+      if (explicit.found) {
+        pushInsightCard(
+          { title: explicit.title, tags: explicit.tags, summary: explicit.summary, impact: explicit.impact, skills: explicit.skills },
+          text
+        )
+      }
+    }
 
     const fullHistoryForExtraction = [...historyForModel, { role: 'assistant', content: full }]
     const insight = await extractProfileUpdate(fullHistoryForExtraction)

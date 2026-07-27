@@ -3,16 +3,41 @@ const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
 const MODEL = 'llama-3.1-8b-instant'
 const CURRENT_YEAR = new Date().getFullYear()
 
-const SYSTEM_PROMPT = `You are Freshman AI, a warm but sharp college admissions advisor for Freshman Academy.
-Talk like a real mentor: specific, encouraging, never generic. 2-4 sentences unless asked for more.
+function buildSystemPrompt(studentName) {
+  const nameLine = studentName
+    ? `The student's name is ${studentName}. Use their first name naturally sometimes — when you greet
+them, celebrate something, or ask a real question — the way a mentor who actually knows them would.
+Don't force it into every message, and never use their full name repeatedly like a script.`
+    : `You don't know the student's name yet. If it comes up naturally, remember it — otherwise don't ask
+for it directly, just let it emerge from conversation.`
 
-Never invent facts the student hasn't stated. But when you can reasonably infer something practical
-(e.g. they're in 11th grade, so they'd likely apply and enroll on a normal timeline), say it back to
-confirm rather than assuming silently — e.g. "So you'd be applying this fall, aiming to start next
-year — does that sound right?" This makes your understanding visible and correctable.`
+  return `You are Freshman AI, a college admissions advisor for Freshman Academy. You text like a smart,
+direct human mentor — not like an AI assistant.
+
+${nameLine}
+
+STRICT RULES:
+- 1-3 sentences per reply. Never more. No exceptions.
+- Never use numbered lists, bullet points, or headers in chat. Ever.
+- Never write "Freshman Year: 1. ... 2. ..." style plans. If a multi-step plan would help, say one
+  sentence about it and tell them to ask you to "build my roadmap" — that's what the Roadmap page is for.
+- No corporate/AI phrasing: never say "I'd be happy to," "Let's dive in," "Great question," "As an AI,"
+  or similar filler. Just answer like a person would text a friend they're mentoring.
+- Sound like you have opinions and instincts, not like you're reciting a guide.
+- Never invent facts the student hasn't stated. If you can reasonably infer something (e.g. they're in
+  11th grade, so they're likely applying on a normal timeline), say it back to confirm in one short
+  line rather than assuming silently.
+- If a student asks you to add something to their portfolio, don't say "I'll add it" — that's handled
+  automatically. Just acknowledge naturally, e.g. "Nice — that's going straight into your portfolio."
+
+Example of the right length and tone: "Got it — 9th grade, so you've got time. Best move right now
+isn't SAT prep, it's finding one thing you actually care about and going deep on it. What are you into?"
+
+Example of what NOT to do: any reply with numbered steps, multiple paragraphs, or a year-by-year plan.`
+}
 
 // Streams tokens via onToken(chunk). Resolves with the full text when done.
-export async function chatWithAdvisorStream(history, onToken) {
+export async function chatWithAdvisorStream(history, onToken, studentName = null) {
   const res = await fetch(GROQ_URL, {
     method: 'POST',
     headers: {
@@ -21,9 +46,9 @@ export async function chatWithAdvisorStream(history, onToken) {
     },
     body: JSON.stringify({
       model: MODEL,
-      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...history],
-      temperature: 0.5,
-      max_tokens: 400,
+      messages: [{ role: 'system', content: buildSystemPrompt(studentName) }, ...history],
+      temperature: 0.6,
+      max_tokens: 180,
       stream: true,
     }),
   })
@@ -68,10 +93,17 @@ export async function chatWithAdvisorStream(history, onToken) {
   return full
 }
 
-const EXTRACTION_SYSTEM_PROMPT = `You analyze a FULL conversation between Freshman AI and a student.
-Extract a cumulative snapshot of every fact the student has explicitly stated across all their
-messages so far. Never guess or infer beyond what was actually said. If something was never
+const EXTRACTION_SYSTEM_PROMPT = `You read a list of things a student has said to their college
+advisor, across a conversation. Extract a cumulative snapshot of every fact EXPLICITLY stated in
+these messages. Never guess or infer beyond what was actually said. If something was never
 mentioned, use null or an empty array.
+
+These are the student's own words only — nothing from an advisor is included. Do not extract
+anything that sounds like a suggestion, plan, or recommendation; only extract what the student
+themselves claims about their own life, activities, stats, or goals.
+
+Treat any acceptance, award, or accomplishment the student states as real, even if abbreviated or
+unfamiliar to you (e.g. "accepted to YYGS") — don't require you to recognize the program by name.
 
 Respond with ONLY raw JSON, no markdown fences, no preamble. Schema:
 
@@ -91,7 +123,8 @@ Respond with ONLY raw JSON, no markdown fences, no preamble. Schema:
 }
 
 Tags for activities must be from: Leadership, Technology, Community, Academic, Arts, Athletics, Service.
-Only include an activity if it's a genuine achievement/project/leadership role, not a passing mention.`
+Only include an activity if the student clearly describes doing it themselves — not a suggestion, not
+a hypothetical, not something the advisor recommended.`
 
 export async function extractProfileUpdate(conversationHistory) {
   const empty = {
@@ -100,9 +133,12 @@ export async function extractProfileUpdate(conversationHistory) {
     gpa: null, sat_score: null, act_score: null,
   }
 
-  const transcript = conversationHistory
-    .map((m) => `${m.role === 'user' ? 'Student' : 'Advisor'}: ${m.content}`)
+  const studentOnly = conversationHistory
+    .filter((m) => m.role === 'user')
+    .map((m) => `- ${m.content}`)
     .join('\n')
+
+  if (!studentOnly.trim()) return empty
 
   const res = await fetch(GROQ_URL, {
     method: 'POST',
@@ -111,7 +147,7 @@ export async function extractProfileUpdate(conversationHistory) {
       model: MODEL,
       messages: [
         { role: 'system', content: EXTRACTION_SYSTEM_PROMPT },
-        { role: 'user', content: transcript },
+        { role: 'user', content: studentOnly },
       ],
       temperature: 0.1,
       max_tokens: 600,
@@ -131,6 +167,57 @@ export async function extractProfileUpdate(conversationHistory) {
   }
 }
 
+const EXPLICIT_ADD_PROMPT = `The student just explicitly asked to add something to their portfolio.
+Look at their recent messages and find the most recent achievement, activity, acceptance, award, or
+accomplishment they mentioned — even if it's just a short phrase like "I got accepted to YYGS" or an
+acronym you don't fully recognize. Treat any acceptance, award, or accomplishment they state as real
+and portfolio-worthy, even with minimal detail — don't require it to be spelled out in full.
+
+Respond with ONLY raw JSON, no markdown fences, no preamble. Schema:
+
+{
+  "found": boolean,
+  "title": string,
+  "tags": string[],
+  "summary": string,
+  "impact": string,
+  "skills": string[]
+}
+
+If truly nothing achievement-like appears in their recent messages, respond with exactly: {"found": false}`
+
+export async function extractExplicitPortfolioRequest(recentUserMessages) {
+  const empty = { found: false }
+  const context = recentUserMessages.slice(-6).map((m) => `- ${m}`).join('\n')
+  if (!context.trim()) return empty
+
+  const res = await fetch(GROQ_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [
+        { role: 'system', content: EXPLICIT_ADD_PROMPT },
+        { role: 'user', content: context },
+      ],
+      temperature: 0.2,
+      max_tokens: 300,
+    }),
+  })
+
+  if (!res.ok) return empty
+
+  const data = await res.json()
+  const raw = data.choices[0].message.content.trim()
+
+  try {
+    const clean = raw.replace(/```json|```/g, '').trim()
+    return JSON.parse(clean)
+  } catch {
+    return empty
+  }
+}
+
 const DOCUMENT_EXTRACTION_PROMPT = `You analyze the raw text of a student's resume or LinkedIn profile
 export for Freshman Academy. Extract everything genuinely present — do not invent anything not in
 the text.
@@ -145,8 +232,8 @@ Respond with ONLY raw JSON, no markdown fences, no preamble. Schema:
 
 {
   "activities": [{ "title": string, "tags": string[], "summary": string, "impact": string, "skills": string[] }],
-  "education_history": [{ "school": string, "level": string }],  // level e.g. "High School", "Lyceum"
-  "target_schools": string[],   // ONLY explicit application/aspiration targets, never attended schools
+  "education_history": [{ "school": string, "level": string }],
+  "target_schools": string[],
   "honors": string[],
   "interests": string[],
   "major": string | null,
@@ -217,7 +304,7 @@ demographics) as JSON. Generate a concrete, personalized roadmap of next steps.
 
 Reason specifically about THIS student's actual gaps relative to their stated target schools and major
 — e.g. a CS applicant to Harvard with no technical projects needs different advice than one with three.
-Never give generic advice like "work hard" or "be yourself." Every step must be a specific, actionable
+Never give generic advice like "work hard" or "be yourself." If "detected_gaps" are provided in the input, prioritize steps that directly close those specific gaps — reference them concretely rather than repeating generic advice. Every step must be a specific, actionable
 task tied to a real gap or opportunity in their profile.
 
 Respond with ONLY raw JSON, no markdown fences, no preamble. Schema:
@@ -226,15 +313,15 @@ Respond with ONLY raw JSON, no markdown fences, no preamble. Schema:
   "steps": [
     {
       "stage": one of ${JSON.stringify(ROADMAP_STAGES)},
-      "title": string,          // short, e.g. "Find a CS research program"
-      "description": string     // 1-2 sentences, specific to this student's profile
+      "title": string,
+      "description": string
     }
   ]
 }
 
 Produce 2-4 steps per stage, 12-20 steps total, ordered by priority within each stage.`
 
-export async function generateRoadmap(profile, portfolioItems) {
+export async function generateRoadmap(profile, portfolioItems, gaps = []) {
   const payload = {
     profile: {
       target_schools: profile?.target_schools || [],
@@ -250,6 +337,7 @@ export async function generateRoadmap(profile, portfolioItems) {
     activities: (portfolioItems || []).map((p) => ({
       title: p.title, tags: p.tags, summary: p.summary, impact: p.impact,
     })),
+    detected_gaps: gaps.map((g) => ({ title: g.title, description: g.description, severity: g.severity })),
   }
 
   const res = await fetch(GROQ_URL, {
@@ -278,6 +366,36 @@ export async function generateRoadmap(profile, portfolioItems) {
   } catch {
     return { steps: [] }
   }
+}
+
+const ESSAY_POLISH_PROMPT = `You improve the prose of a college application essay draft for Freshman
+Academy. Keep the student's authentic voice, structure, and every fact/story exactly as written —
+never invent new details or experiences. Tighten weak sentences, fix flow, and strengthen word choice
+where it genuinely helps, without making it sound like someone else wrote it.
+
+Respond with ONLY the improved essay text, no preamble, no markdown, no quotation marks around it.`
+
+export async function polishEssay(content) {
+  if (!content.trim()) return content
+
+  const res = await fetch(GROQ_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [
+        { role: 'system', content: ESSAY_POLISH_PROMPT },
+        { role: 'user', content },
+      ],
+      temperature: 0.5,
+      max_tokens: 1500,
+    }),
+  })
+
+  if (!res.ok) return content
+
+  const data = await res.json()
+  return data.choices[0].message.content.trim()
 }
 
 const POLISH_SYSTEM_PROMPT = `You improve the wording of a single college-application portfolio entry
@@ -315,34 +433,4 @@ export async function polishPortfolioItem(draft) {
   } catch {
     return null
   }
-}
-
-const ESSAY_POLISH_PROMPT = `You improve the prose of a college application essay draft for Freshman
-Academy. Keep the student's authentic voice, structure, and every fact/story exactly as written —
-never invent new details or experiences. Tighten weak sentences, fix flow, and strengthen word choice
-where it genuinely helps, without making it sound like someone else wrote it.
-
-Respond with ONLY the improved essay text, no preamble, no markdown, no quotation marks around it.`
-
-export async function polishEssay(content) {
-  if (!content.trim()) return content
-
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: ESSAY_POLISH_PROMPT },
-        { role: 'user', content },
-      ],
-      temperature: 0.5,
-      max_tokens: 1500,
-    }),
-  })
-
-  if (!res.ok) return content
-
-  const data = await res.json()
-  return data.choices[0].message.content.trim()
 }
