@@ -1,0 +1,1 @@
+Builder failed to reach Gemini.
