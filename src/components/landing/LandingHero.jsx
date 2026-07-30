@@ -1,13 +1,12 @@
 import Button from '../ui/Button.jsx'
 import Card from '../ui/Card.jsx'
 import FreshmanCrest from '../ui/FreshmanCrest.jsx'
-import HeroCrestForge from './HeroCrestForge.jsx'
 
 export default function LandingHero({ onGetStarted }) {
   return (
     <section id="product" className="grid grid-cols-1 items-center gap-14 px-8 pb-20 pt-16 lg:grid-cols-2 lg:px-16">
       <div>
-        <HeroCrestForge size={64} />
+        <FreshmanCrest size={64} />
         <p className="mt-5 text-[12.5px] font-medium tracking-[0.16em] text-gold-600 uppercase">Freshman Academy</p>
         <h1 className="mt-4 font-serif text-[44px] leading-[1.08] text-navy-900 lg:text-[52px]">
           Here We Forge<br />Freshman.

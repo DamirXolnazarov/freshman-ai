@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import Sidebar from '../components/layout/Sidebar.jsx'
 import ChatHeader from '../components/layout/ChatHeader.jsx'
+import ChatBackground from '../components/chat/ChatBackground.jsx'
 import { UserMessage, AIMessage } from '../components/chat/ChatMessage.jsx'
 import { useVoiceMode } from '../hooks/useVoiceMode.js'
 import VoiceOrb from '../components/chat/VoiceOrb.jsx'
@@ -8,6 +9,7 @@ import ProfileInsightCard from '../components/chat/ProfileInsightCard.jsx'
 import ExtractionProgress from '../components/chat/ExtractionProgress.jsx'
 import CastleBuildLoader from '../components/chat/CastleBuildLoader.jsx'
 import ChatInput from '../components/chat/ChatInput.jsx'
+import MarkdownLite from '../components/chat/MarkdownLite.jsx'
 import Card from '../components/ui/Card.jsx'
 import Button from '../components/ui/Button.jsx'
 import RecentAdditionsPanel from '../components/panels/RecentAdditionsPanel.jsx'
@@ -26,6 +28,7 @@ import { computeCompleteness, roadmapReadinessGaps } from '../lib/profileComplet
 import { computeGaps } from '../lib/gapDetection.js'
 import { getSavedUniversities } from '../lib/universities.js'
 import { withRetry } from '../lib/withRetry.js'
+import { canCallNow, msUntilNextCall } from '../lib/rateLimiter.js'
 import { supabase } from '../lib/supabase.js'
 
 function timeNow() {
@@ -210,8 +213,6 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     setItems((prev) => [...prev, assistantItem])
     saveMessage('assistant', reply)
 
-    // detected gaps feed directly into roadmap generation, so the plan is
-    // explicitly justified by real numbers, not just generically personalized
     const detectedGaps = computeGaps(profile, portfolioItems || [], savedUniversities || [])
     const { steps } = await generateRoadmap(profile, portfolioItems, detectedGaps)
 
@@ -235,6 +236,15 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
 
   async function handleSend(text) {
     if (!text.trim() || isStreaming || !studentId) return
+
+    if (!canCallNow()) {
+      const waitSec = Math.ceil(msUntilNextCall() / 1000)
+      setItems((prev) => [
+        ...prev,
+        { id: nextId(), kind: 'assistant', content: `Give me just a second — try again in a moment.`, time: timeNow() },
+      ])
+      return
+    }
 
     if (ROADMAP_INTENT.test(text)) {
       await handleRoadmapRequest(text)
@@ -285,7 +295,6 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     setStreamingText('')
     saveMessage('assistant', full)
 
-    // explicit "add this to my portfolio" request — dedicated, more lenient pass
     if (ADD_TO_PORTFOLIO_INTENT.test(text)) {
       const recentUserMessages = [...items, userItem]
         .filter((it) => it.kind === 'user')
@@ -432,10 +441,11 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
       <Sidebar activePage="chat" onNavigate={onNavigate} student={studentInfo} />
 
       <div className="flex flex-1 min-w-0">
-        <main className="flex flex-1 flex-col min-w-0">
+        <main className="relative flex flex-1 flex-col min-w-0">
+          <ChatBackground />
           <ChatHeader />
 
-          <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-7 space-y-6">
+          <div ref={scrollRef} className="relative z-10 flex-1 overflow-y-auto px-8 py-7 space-y-6">
             {items.length === 0 && !isStreaming && (
               <AIMessage>
                 <p className="text-[14.5px] leading-relaxed text-ink-700">
@@ -457,7 +467,7 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
               if (it.kind === 'assistant') {
                 return (
                   <AIMessage key={it.id}>
-                    <p className="text-[14.5px] leading-relaxed text-ink-700">{it.content}</p>
+                    <MarkdownLite text={it.content} className="text-[14.5px] leading-relaxed text-ink-700" />
                   </AIMessage>
                 )
               }
@@ -535,15 +545,13 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
 
             {isStreaming && (
               <AIMessage>
-                <p className="text-[14.5px] leading-relaxed text-ink-700">
-                  {streamingText}
-                  <span className="ml-0.5 inline-block h-4 w-[2px] animate-pulse bg-navy-900/50 align-middle" />
-                </p>
+                <MarkdownLite text={streamingText} className="text-[14.5px] leading-relaxed text-ink-700" />
+                <span className="ml-0.5 inline-block h-4 w-[2px] animate-pulse bg-navy-900/50 align-middle" />
               </AIMessage>
             )}
           </div>
 
-          <div className="px-8 pb-6">
+          <div className="relative z-10 px-8 pb-6">
             <ChatInput
               onSend={handleSend}
               disabled={isStreaming || isParsingResume}
