@@ -434,3 +434,44 @@ export async function polishPortfolioItem(draft) {
     return null
   }
 }
+
+const REMOVE_INTENT_PROMPT = `The student just asked to remove, delete, or take back something from their
+portfolio — often because they said it was a mistake, exaggeration, or fake (e.g. "remove YYGS, it was fake",
+"delete that startup thing", "take out the debate club one"). Identify which portfolio item title they mean,
+matching loosely against the titles provided.
+
+Respond with ONLY raw JSON, no markdown fences, no preamble. Schema:
+
+{ "found": boolean, "matched_title": string }
+
+If you can't confidently match their message to one of the provided titles, respond with exactly: {"found": false}`
+
+export async function extractRemovalIntent(text, existingTitles) {
+  const empty = { found: false }
+  if (!existingTitles.length) return empty
+
+  const res = await fetch(GROQ_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [
+        { role: 'system', content: REMOVE_INTENT_PROMPT },
+        { role: 'user', content: `Message: "${text}"\n\nExisting portfolio titles:\n${existingTitles.map(t => `- ${t}`).join('\n')}` },
+      ],
+      temperature: 0.1,
+      max_tokens: 150,
+    }),
+  })
+
+  if (!res.ok) return empty
+  const data = await res.json()
+  const raw = data.choices[0].message.content.trim()
+
+  try {
+    const clean = raw.replace(/```json|```/g, '').trim()
+    return JSON.parse(clean)
+  } catch {
+    return empty
+  }
+}

@@ -29,6 +29,7 @@ import {
   extractProfileUpdate,
   extractProfileFromDocument,
   extractExplicitPortfolioRequest,
+  extractRemovalIntent,
   enrollmentYearFromGrade,
   generateRoadmap,
 } from '../lib/groq.js'
@@ -56,6 +57,7 @@ function nextId() {
 
 const ROADMAP_INTENT = /\b(build|make|create|generate|show)\b.*\broadmap\b|\broadmap\b.*\b(build|make|create|generate)\b/i
 const ADD_TO_PORTFOLIO_INTENT = /\b(add|put|save)\b.*\b(this|that|it)\b.*\bportfolio\b|\bportfolio\b.*\b(add|put|save)\b/i
+const REMOVE_INTENT = /\b(remove|delete|take out|get rid of)\b.*\b(portfolio|that|this|it)?\b/i
 
 export default function ChatPage({ onNavigate, studentId, initialName }) {
   const [items, setItems] = useState([])
@@ -71,6 +73,8 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     completeness: 0,
   })
   const scrollRef = useRef(null)
+  const shownActivityTitles = useRef(new Set())
+  const suggestedOpportunityIds = useRef(new Set())
 
   const voice = useVoiceMode({ onSend: handleSend })
 
@@ -173,6 +177,24 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     setItems((prev) => [...prev, { id: nextId(), kind: 'insight', status: 'idle', insight: { ...activity, sourceMessage } }])
   }
 
+  async function maybeShowInsight(newest, text) {
+    const key = newest.title?.trim().toLowerCase()
+    if (!key) return
+
+    const { data: existing } = await supabase
+      .from('portfolio_items')
+      .select('id, title')
+      .eq('student_id', studentId)
+
+    const alreadyExists = existing?.some((p) => p.title?.trim().toLowerCase() === key)
+    const alreadyShownThisSession = shownActivityTitles.current.has(key)
+
+    if (!alreadyExists && !alreadyShownThisSession) {
+      shownActivityTitles.current.add(key)
+      pushInsightCard(newest, text)
+    }
+  }
+
   async function maybeCreateTask(text) {
     const parsed = parseTaskIntent(text)
     if (!parsed) return
@@ -209,7 +231,8 @@ async function maybeShowUniversitySnapshot(text) {
     const { data: profile } = await supabase.from('student_profile').select('*').eq('student_id', studentId).maybeSingle()
     const ranked = all.map((o) => ({ ...o, matchScore: scoreMatch(o, profile) })).sort((a, b) => b.matchScore - a.matchScore)
     const top = ranked[0]
-    if (top && top.matchScore >= 70) {
+    if (top && top.matchScore >= 70 && !suggestedOpportunityIds.current.has(top.id)) {
+      suggestedOpportunityIds.current.add(top.id)
       setItems((prev) => [...prev, { id: nextId(), kind: 'opportunity_suggestion', opportunity: top, matchScore: top.matchScore }])
     }
   }
@@ -255,6 +278,46 @@ async function maybeShowUniversitySnapshot(text) {
     setTimeout(() => onNavigate('roadmap', { autoGenerate: false }), 900)
   }
 
+  async function handleRemoveRequest(text) {
+    const userItem = { id: nextId(), kind: 'user', content: text, time: timeNow() }
+    setItems((prev) => [...prev, userItem])
+    saveMessage('user', text)
+
+    const { data: existing } = await supabase.from('portfolio_items').select('id, title').eq('student_id', studentId)
+
+    if (!existing?.length) {
+      const reply = "Your portfolio's empty right now, so there's nothing for me to remove."
+      setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: reply, time: timeNow() }])
+      saveMessage('assistant', reply)
+      return
+    }
+
+    const result = await extractRemovalIntent(text, existing.map((e) => e.title))
+
+    if (!result.found) {
+      const reply = "I'm not sure which item you mean — can you say the exact name from your portfolio?"
+      setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: reply, time: timeNow() }])
+      saveMessage('assistant', reply)
+      return
+    }
+
+    const match = existing.find((e) => e.title.trim().toLowerCase() === result.matched_title.trim().toLowerCase())
+    if (!match) {
+      const reply = "I couldn't find an exact match for that in your portfolio — can you double check the name?"
+      setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: reply, time: timeNow() }])
+      saveMessage('assistant', reply)
+      return
+    }
+
+    await supabase.from('portfolio_items').delete().eq('id', match.id)
+    shownActivityTitles.current.delete(match.title.trim().toLowerCase())
+    notify.success(`${match.title} removed from your portfolio`)
+
+    const reply = `Done — removed "${match.title}" from your portfolio.`
+    setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: reply, time: timeNow() }])
+    saveMessage('assistant', reply)
+  }
+
   async function handleSend(text) {
     if (!text.trim() || isStreaming || !studentId) return
 
@@ -266,6 +329,11 @@ async function maybeShowUniversitySnapshot(text) {
 
     if (ROADMAP_INTENT.test(text)) {
       await handleRoadmapRequest(text)
+      return
+    }
+
+    if (REMOVE_INTENT.test(text)) {
+      await handleRemoveRequest(text)
       return
     }
 
@@ -331,7 +399,7 @@ if (isSubstantive && ADD_TO_PORTFOLIO_INTENT.test(text)) {
       const recentUserMessages = [...items, userItem].filter((it) => it.kind === 'user').map((it) => it.content)
       const explicit = await extractExplicitPortfolioRequest(recentUserMessages)
       if (explicit.found) {
-        pushInsightCard({ title: explicit.title, tags: explicit.tags, summary: explicit.summary, impact: explicit.impact, skills: explicit.skills }, text)
+        await maybeShowInsight({ title: explicit.title, tags: explicit.tags, summary: explicit.summary, impact: explicit.impact, skills: explicit.skills }, text)
       }
     }
 
@@ -341,7 +409,8 @@ const fullHistoryForExtraction = [...historyForModel, { role: 'assistant', conte
 const insight = await extractProfileUpdate(fullHistoryForExtraction)
 
     if (insight.activities.length > 0) {
-      pushInsightCard(insight.activities[insight.activities.length - 1], text)
+      const newest = insight.activities[insight.activities.length - 1]
+      await maybeShowInsight(newest, text)
     }
 
     const hasProfileUpdates =
