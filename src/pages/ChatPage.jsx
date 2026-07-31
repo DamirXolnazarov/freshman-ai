@@ -1,19 +1,28 @@
 import { useState, useEffect, useRef } from 'react'
 import Sidebar from '../components/layout/Sidebar.jsx'
-import ChatHeader from '../components/layout/ChatHeader.jsx'
 import ChatBackground from '../components/chat/ChatBackground.jsx'
 import { UserMessage, AIMessage } from '../components/chat/ChatMessage.jsx'
+import ChatContextSidebar from '../components/chat/ChatContextSidebar.jsx'
 import { useVoiceMode } from '../hooks/useVoiceMode.js'
 import VoiceOrb from '../components/chat/VoiceOrb.jsx'
 import ProfileInsightCard from '../components/chat/ProfileInsightCard.jsx'
 import ExtractionProgress from '../components/chat/ExtractionProgress.jsx'
 import CastleBuildLoader from '../components/chat/CastleBuildLoader.jsx'
+import ThinkingStatus from '../components/chat/ThinkingStatus.jsx'
+import { detectScoreMention, analyzeScore } from '../lib/scoreAnalysis.js'
+import { parseReminderIntent } from '../lib/reminderIntent.js'
+import { createReminder } from '../lib/reminders.js'
+import ScoreAnalysisCard from '../components/chat/cards/ScoreAnalysisCard.jsx'
+import UniversitySnapshotCard from '../components/chat/cards/UniversitySnapshotCard.jsx'
+import ReminderCreatedCard from '../components/chat/cards/ReminderCreatedCard.jsx'
 import ChatInput from '../components/chat/ChatInput.jsx'
+import TaskCreatedCard from '../components/chat/cards/TaskCreatedCard.jsx'
+import RoadmapUpdateCard from '../components/chat/cards/RoadmapUpdateCard.jsx'
+import OpportunitySuggestionCard from '../components/chat/cards/OpportunitySuggestionCard.jsx'
+import YouTubeEmbed, { extractYouTubeId } from '../components/chat/YouTubeEmbed.jsx'
 import MarkdownLite from '../components/chat/MarkdownLite.jsx'
 import Card from '../components/ui/Card.jsx'
 import Button from '../components/ui/Button.jsx'
-import RecentAdditionsPanel from '../components/panels/RecentAdditionsPanel.jsx'
-import SuggestedPanel from '../components/panels/SuggestedPanel.jsx'
 import { ArrowRight } from 'lucide-react'
 import {
   chatWithAdvisorStream,
@@ -27,8 +36,13 @@ import { extractTextFromPdf } from '../lib/resumeParser.js'
 import { computeCompleteness, roadmapReadinessGaps } from '../lib/profileCompleteness.js'
 import { computeGaps } from '../lib/gapDetection.js'
 import { getSavedUniversities } from '../lib/universities.js'
+import { getOpportunities, saveOpportunity, scoreMatch } from '../lib/opportunities.js'
+import { createTask } from '../lib/tasks.js'
+import { parseTaskIntent } from '../lib/taskIntent.js'
+import { findRelevantVideo } from '../lib/freshmanVideos.js'
 import { withRetry } from '../lib/withRetry.js'
 import { canCallNow, msUntilNextCall } from '../lib/rateLimiter.js'
+import { notify } from '../lib/toast.js'
 import { supabase } from '../lib/supabase.js'
 
 function timeNow() {
@@ -49,7 +63,7 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
   const [isStreaming, setIsStreaming] = useState(false)
   const [voiceModeOpen, setVoiceModeOpen] = useState(false)
   const [isParsingResume, setIsParsingResume] = useState(false)
-  const [recentAdditions, setRecentAdditions] = useState([])
+  const [memoryFacts, setMemoryFacts] = useState([])
   const [hasOfferedRoadmap, setHasOfferedRoadmap] = useState(false)
   const [studentInfo, setStudentInfo] = useState({
     name: initialName || 'Student',
@@ -81,38 +95,19 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
         )
       }
 
-      const { data: portfolioItems } = await supabase
-        .from('portfolio_items')
-        .select('*')
-        .eq('student_id', studentId)
-        .order('created_at', { ascending: false })
-        .limit(5)
-
-      if (portfolioItems?.length) {
-        setRecentAdditions(
-          portfolioItems.map((it) => ({ title: it.title, when: new Date(it.created_at).toLocaleDateString() }))
-        )
-      }
-
-      const { data: studentRow } = await supabase
-        .from('students')
-        .select('name')
-        .eq('id', studentId)
-        .single()
-
-      const { data: profile } = await supabase
-        .from('student_profile')
-        .select('*')
-        .eq('student_id', studentId)
-        .maybeSingle()
-
-      const { data: existingRoadmap } = await supabase
-        .from('roadmap_steps')
-        .select('id')
-        .eq('student_id', studentId)
-        .limit(1)
+      const { data: studentRow } = await supabase.from('students').select('name').eq('id', studentId).single()
+      const { data: profile } = await supabase.from('student_profile').select('*').eq('student_id', studentId).maybeSingle()
+      const { data: portfolioItems } = await supabase.from('portfolio_items').select('*').eq('student_id', studentId)
+      const { data: existingRoadmap } = await supabase.from('roadmap_steps').select('id').eq('student_id', studentId).limit(1)
 
       setHasOfferedRoadmap(!!existingRoadmap?.length)
+
+      const facts = []
+      if (profile?.sat_score) facts.push(`SAT ${profile.sat_score}`)
+      if (profile?.target_schools?.length) facts.push(`Interested in ${profile.target_schools[0]}`)
+      if (profile?.major) facts.push(profile.major)
+      if (profile?.honors?.length) facts.push(profile.honors[0])
+      setMemoryFacts(facts)
 
       const classOf = profile?.enrollment_year ? profile.enrollment_year + 4 : null
       const completeness = computeCompleteness(profile, portfolioItems?.length || 0)
@@ -140,11 +135,7 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
   }
 
   async function persistProfileMerge(insight, existingActivitiesCount) {
-    const { data: current } = await supabase
-      .from('student_profile')
-      .select('*')
-      .eq('student_id', studentId)
-      .maybeSingle()
+    const { data: current } = await supabase.from('student_profile').select('*').eq('student_id', studentId).maybeSingle()
 
     const gradeLevel = insight.grade_level || current?.grade_level || null
     const enrollmentYear = enrollmentYearFromGrade(gradeLevel) || current?.enrollment_year || null
@@ -179,10 +170,48 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
   }
 
   function pushInsightCard(activity, sourceMessage) {
-    setItems((prev) => [
-      ...prev,
-      { id: nextId(), kind: 'insight', status: 'idle', insight: { ...activity, sourceMessage } },
-    ])
+    setItems((prev) => [...prev, { id: nextId(), kind: 'insight', status: 'idle', insight: { ...activity, sourceMessage } }])
+  }
+
+  async function maybeCreateTask(text) {
+    const parsed = parseTaskIntent(text)
+    if (!parsed) return
+    const task = await createTask(studentId, { title: parsed.title, due_date: parsed.dueDate })
+    setItems((prev) => [...prev, { id: nextId(), kind: 'task_created', task }])
+  }
+
+  async function maybeCreateReminder(text) {
+  const parsed = parseReminderIntent(text)
+  if (!parsed) return
+  const reminder = await createReminder(studentId, parsed)
+  setItems((prev) => [...prev, { id: nextId(), kind: 'reminder_created', reminder }])
+}
+
+async function maybeAnalyzeScore(text) {
+  const scoreInfo = detectScoreMention(text)
+  if (!scoreInfo) return
+  const savedUniversities = await getSavedUniversities(studentId)
+  const analysis = analyzeScore(scoreInfo, savedUniversities)
+  setItems((prev) => [...prev, { id: nextId(), kind: 'score_analysis', analysis }])
+}
+
+async function maybeShowUniversitySnapshot(text) {
+  const savedUniversities = await getSavedUniversities(studentId)
+  const mentioned = savedUniversities.find((s) => text.toLowerCase().includes(s.universities?.name?.toLowerCase()))
+  if (mentioned) {
+    setItems((prev) => [...prev, { id: nextId(), kind: 'university_snapshot', savedUniversity: mentioned }])
+  }
+}
+
+  async function maybeSuggestOpportunity(insight) {
+    if (!insight.major && !insight.interests?.length) return
+    const all = await getOpportunities({})
+    const { data: profile } = await supabase.from('student_profile').select('*').eq('student_id', studentId).maybeSingle()
+    const ranked = all.map((o) => ({ ...o, matchScore: scoreMatch(o, profile) })).sort((a, b) => b.matchScore - a.matchScore)
+    const top = ranked[0]
+    if (top && top.matchScore >= 70) {
+      setItems((prev) => [...prev, { id: nextId(), kind: 'opportunity_suggestion', opportunity: top, matchScore: top.matchScore }])
+    }
   }
 
   async function handleRoadmapRequest(text) {
@@ -202,36 +231,28 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     if (gaps.length > 0) {
       const gapText = gaps.map((g) => g.label).join(', ')
       const reply = `I'd love to build you a really specific roadmap, ${firstName} — but I'm missing ${gapText}. Want to fill me in on any of that first?`
-      const assistantItem = { id: nextId(), kind: 'assistant', content: reply, time: timeNow() }
-      setItems((prev) => [...prev, assistantItem])
+      setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: reply, time: timeNow() }])
       saveMessage('assistant', reply)
       return
     }
 
-    const reply = `Pulling everything together — your goals, stats, and activities — and taking you to your roadmap now…`
-    const assistantItem = { id: nextId(), kind: 'assistant', content: reply, time: timeNow() }
-    setItems((prev) => [...prev, assistantItem])
+    const reply = `Pulling everything together and taking you to your roadmap now…`
+    setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: reply, time: timeNow() }])
     saveMessage('assistant', reply)
 
     const detectedGaps = computeGaps(profile, portfolioItems || [], savedUniversities || [])
     const { steps } = await generateRoadmap(profile, portfolioItems, detectedGaps)
 
+    let progress = 0
     if (steps.length > 0) {
       await supabase.from('roadmap_steps').delete().eq('student_id', studentId)
-      const rows = steps.map((s, i) => ({
-        student_id: studentId,
-        stage: s.stage,
-        title: s.title,
-        description: s.description,
-        status: 'pending',
-        order_index: i,
-      }))
+      const rows = steps.map((s, i) => ({ student_id: studentId, stage: s.stage, title: s.title, description: s.description, status: 'pending', order_index: i }))
       await supabase.from('roadmap_steps').insert(rows)
     }
 
-    setTimeout(() => {
-      onNavigate('roadmap', { autoGenerate: false })
-    }, 900)
+    setItems((prev) => [...prev, { id: nextId(), kind: 'roadmap_update', progress }])
+
+    setTimeout(() => onNavigate('roadmap', { autoGenerate: false }), 900)
   }
 
   async function handleSend(text) {
@@ -239,10 +260,7 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
 
     if (!canCallNow()) {
       const waitSec = Math.ceil(msUntilNextCall() / 1000)
-      setItems((prev) => [
-        ...prev,
-        { id: nextId(), kind: 'assistant', content: `Give me just a second — try again in a moment.`, time: timeNow() },
-      ])
+      setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: `Give me just a second — try again in a moment.`, time: timeNow() }])
       return
     }
 
@@ -255,6 +273,11 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     setItems((prev) => [...prev, userItem])
     saveMessage('user', text)
 
+    await maybeCreateTask(text)
+    await maybeCreateReminder(text)
+await maybeAnalyzeScore(text)
+await maybeShowUniversitySnapshot(text)
+
     setIsStreaming(true)
     setStreamingText('')
 
@@ -266,12 +289,7 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     let failed = false
     try {
       full = await withRetry(
-        () =>
-          chatWithAdvisorStream(
-            historyForModel,
-            (chunk) => setStreamingText((prev) => prev + chunk),
-            studentInfo.name !== 'Student' ? studentInfo.name.split(' ')[0] : null
-          ),
+        () => chatWithAdvisorStream(historyForModel, (chunk) => setStreamingText((prev) => prev + chunk), studentInfo.name !== 'Student' ? studentInfo.name.split(' ')[0] : null),
         { retries: 2 }
       )
     } catch {
@@ -285,32 +303,42 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
       return
     }
 
-    if (voiceModeOpen) {
-      voice.speakReply(full)
-    }
+    if (voiceModeOpen) voice.speakReply(full)
 
-    const assistantItem = { id: nextId(), kind: 'assistant', content: full, time: timeNow() }
-    setItems((prev) => [...prev, assistantItem])
+    setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: full, time: timeNow() }])
     setIsStreaming(false)
     setStreamingText('')
     saveMessage('assistant', full)
 
-    if (ADD_TO_PORTFOLIO_INTENT.test(text)) {
-      const recentUserMessages = [...items, userItem]
-        .filter((it) => it.kind === 'user')
-        .map((it) => it.content)
+    // relevant Freshman Academy video, if the topic matches one we have
+    
 
+    const isSubstantive = text.trim().split(/\s+/).length >= 4
+
+const video = isSubstantive ? findRelevantVideo(text) : null
+if (video) {
+  setItems((prev) => [...prev, { id: nextId(), kind: 'video', videoId: video.videoId, title: video.title }])
+}
+
+if (isSubstantive && ADD_TO_PORTFOLIO_INTENT.test(text)) {
+  // ...existing block unchanged
+}
+    if (video) {
+      setItems((prev) => [...prev, { id: nextId(), kind: 'video', videoId: video.videoId, title: video.title }])
+    }
+
+    if (ADD_TO_PORTFOLIO_INTENT.test(text)) {
+      const recentUserMessages = [...items, userItem].filter((it) => it.kind === 'user').map((it) => it.content)
       const explicit = await extractExplicitPortfolioRequest(recentUserMessages)
       if (explicit.found) {
-        pushInsightCard(
-          { title: explicit.title, tags: explicit.tags, summary: explicit.summary, impact: explicit.impact, skills: explicit.skills },
-          text
-        )
+        pushInsightCard({ title: explicit.title, tags: explicit.tags, summary: explicit.summary, impact: explicit.impact, skills: explicit.skills }, text)
       }
     }
 
-    const fullHistoryForExtraction = [...historyForModel, { role: 'assistant', content: full }]
-    const insight = await extractProfileUpdate(fullHistoryForExtraction)
+    if (!isSubstantive) return // "hey", "thanks", "ok" etc — nothing to extract, stop here
+
+const fullHistoryForExtraction = [...historyForModel, { role: 'assistant', content: full }]
+const insight = await extractProfileUpdate(fullHistoryForExtraction)
 
     if (insight.activities.length > 0) {
       pushInsightCard(insight.activities[insight.activities.length - 1], text)
@@ -322,15 +350,15 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
       insight.gpa || insight.sat_score || insight.act_score
 
     if (hasProfileUpdates) {
-      const merged = await persistProfileMerge(insight, recentAdditions.length)
+      const merged = await persistProfileMerge(insight, 0)
+      await maybeSuggestOpportunity(merged)
 
       if (!hasOfferedRoadmap) {
-        const gaps = roadmapReadinessGaps(merged, recentAdditions.length)
+        const gaps = roadmapReadinessGaps(merged, 0)
         if (gaps.length === 0) {
           setHasOfferedRoadmap(true)
           const offerText = `By the way, ${studentInfo.name.split(' ')[0]} — I think I have enough now to build you a real roadmap. Want me to put one together?`
-          const offerItem = { id: nextId(), kind: 'assistant', content: offerText, time: timeNow() }
-          setItems((prev) => [...prev, offerItem])
+          setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: offerText, time: timeNow() }])
           saveMessage('assistant', offerText)
         }
       }
@@ -345,20 +373,12 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     const { title, tags, summary, impact, skills, sourceMessage } = target.insight
 
     const { error } = await supabase.from('portfolio_items').insert({
-      student_id: studentId,
-      title,
-      tags,
-      summary,
-      impact: impact || '',
-      skills,
-      source_message: sourceMessage,
+      student_id: studentId, title, tags, summary, impact: impact || '', skills, source_message: sourceMessage,
     })
 
     setTimeout(() => {
       updateItem(itemId, { status: 'added' })
-      if (!error) {
-        setRecentAdditions((prev) => [{ title, when: 'Just now', isNew: true }, ...prev].slice(0, 5))
-      }
+      if (!error) notify.success(`${title} added to your portfolio`)
     }, 1400)
   }
 
@@ -366,25 +386,21 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     setItems((prev) => prev.filter((it) => it.id !== itemId))
   }
 
+  async function handleSaveOpportunity(itemId, opportunity) {
+    await saveOpportunity(studentId, opportunity.id)
+    notify.success(`${opportunity.name} saved`)
+    updateItem(itemId, { saved: true })
+  }
+
   async function handleUploadResume(file) {
     if (!studentId || isParsingResume) return
     setIsParsingResume(true)
-
     setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: `Reading ${file.name}…`, time: timeNow() }])
 
     try {
       const text = await extractTextFromPdf(file)
-
       if (!text || text.length < 20) {
-        setItems((prev) => [
-          ...prev,
-          {
-            id: nextId(),
-            kind: 'assistant',
-            content: `I couldn't find any readable text in ${file.name} — if it's a scanned image rather than an exported PDF, I can't read it yet. Try exporting directly from Google Docs/Word/LinkedIn instead of scanning.`,
-            time: timeNow(),
-          },
-        ])
+        setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: `I couldn't find any readable text in ${file.name} — try exporting directly from Google Docs/Word instead of scanning.`, time: timeNow() }])
         setIsParsingResume(false)
         return
       }
@@ -393,44 +409,24 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
 
       if (insight.activities.length > 0) {
         await supabase.from('portfolio_items').insert(
-          insight.activities.map((a) => ({
-            student_id: studentId,
-            title: a.title,
-            tags: a.tags,
-            summary: a.summary,
-            impact: a.impact || '',
-            skills: a.skills,
-            source_message: `Imported from ${file.name}`,
-          }))
-        )
-        setRecentAdditions((prev) =>
-          [...insight.activities.map((a) => ({ title: a.title, when: 'Just now', isNew: true })), ...prev].slice(0, 5)
+          insight.activities.map((a) => ({ student_id: studentId, title: a.title, tags: a.tags, summary: a.summary, impact: a.impact || '', skills: a.skills, source_message: `Imported from ${file.name}` }))
         )
       }
 
-      await persistProfileMerge(insight, recentAdditions.length + insight.activities.length)
+      await persistProfileMerge(insight, insight.activities.length)
 
       const summaryParts = []
-      if (insight.activities.length) summaryParts.push(`${insight.activities.length} activities/experiences`)
+      if (insight.activities.length) summaryParts.push(`${insight.activities.length} activities`)
       if (insight.target_schools.length) summaryParts.push(`target schools (${insight.target_schools.join(', ')})`)
-      if (insight.education_history?.length) summaryParts.push(`${insight.education_history.length} schools attended`)
       if (insight.honors.length) summaryParts.push(`${insight.honors.length} honors`)
 
       const summaryText = summaryParts.length
-        ? `I've read through ${file.name} and added ${summaryParts.join(', ')} to your profile. Anything you'd like to correct or add?`
-        : `I've read ${file.name}, but couldn't confidently pull out structured details — feel free to tell me about your experience directly instead.`
+        ? `I've read through ${file.name} and added ${summaryParts.join(', ')} to your profile.`
+        : `I've read ${file.name}, but couldn't confidently pull out structured details.`
 
       setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: summaryText, time: timeNow() }])
     } catch {
-      setItems((prev) => [
-        ...prev,
-        {
-          id: nextId(),
-          kind: 'assistant',
-          content: "I had trouble reading that file — make sure it's a text-based PDF (not a scanned image) and try again.",
-          time: timeNow(),
-        },
-      ])
+      setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: "I had trouble reading that file — try a text-based PDF.", time: timeNow() }])
     } finally {
       setIsParsingResume(false)
     }
@@ -440,132 +436,180 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     <div className="flex h-screen bg-parchment-50">
       <Sidebar activePage="chat" onNavigate={onNavigate} student={studentInfo} />
 
-      <div className="flex flex-1 min-w-0">
-        <main className="relative flex flex-1 flex-col min-w-0">
-          <ChatBackground />
-          <ChatHeader />
+      <div className="relative flex flex-1 min-w-0">
+        <ChatBackground image="/picture1.png" />
 
-          <div ref={scrollRef} className="relative z-10 flex-1 overflow-y-auto px-8 py-7 space-y-6">
-            {items.length === 0 && !isStreaming && (
-              <AIMessage>
-                <p className="text-[14.5px] leading-relaxed text-ink-700">
-                  Hi, I'm Freshman AI. Tell me about yourself — what you're studying, schools you're
-                  aiming for, things you've built or led — and I'll help turn it into a clear plan.
-                </p>
-              </AIMessage>
-            )}
+        <main className="relative z-10 flex flex-1 flex-col min-w-0">
+          <header className="border-b border-navy-900/[0.06] px-8 py-6">
+            <h1 className="font-serif text-[22px] text-navy-900">Chat with Freshman AI</h1>
+            <p className="mt-1 text-[13px] text-ink-500">Your admissions co-pilot — wise like a mentor, strategic like an advisor.</p>
+          </header>
 
-            {items.map((it) => {
-              if (it.kind === 'user') {
-                return (
-                  <UserMessage key={it.id} time={it.time}>
-                    {it.content}
-                  </UserMessage>
-                )
-              }
+          <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-8">
+            <div className="mx-auto max-w-[820px] space-y-7">
+              {items.length === 0 && !isStreaming && (
+                <div className="pt-16 text-center">
+                  <p className="font-serif text-[22px] text-navy-900">Your journey starts with a single conversation.</p>
+                  <div className="mt-6 flex flex-wrap justify-center gap-2">
+                    {['Build my roadmap', 'Review my profile', 'Find universities', 'Improve my resume', 'Find scholarships'].map((p) => (
+                      <button key={p} onClick={() => handleSend(p)} className="rounded-full border border-navy-900/10 bg-white px-4 py-2 text-[13px] text-ink-700 hover:bg-parchment-100">
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-              if (it.kind === 'assistant') {
-                return (
-                  <AIMessage key={it.id}>
-                    <MarkdownLite text={it.content} className="text-[14.5px] leading-relaxed text-ink-700" />
-                  </AIMessage>
-                )
-              }
+              {items.map((it) => {
+                if (it.kind === 'user') return <UserMessage key={it.id} time={it.time}>{it.content}</UserMessage>
 
-              if (it.kind === 'error') {
+                if (it.kind === 'assistant') {
+                  return (
+                    <AIMessage key={it.id} content={it.content}>
+                      <MarkdownLite text={it.content} className="text-[15px] leading-[1.7] text-ink-700" />
+                    </AIMessage>
+                  )
+                }
+
+                if (it.kind === 'video') {
+                  return (
+                    <AIMessage key={it.id} showAvatar={false}>
+                      <YouTubeEmbed videoId={it.videoId} title={it.title} />
+                    </AIMessage>
+                  )
+                }
+
+                if (it.kind === 'task_created') {
+                  return (
+                    <AIMessage key={it.id} showAvatar={false}>
+                      <TaskCreatedCard title={it.task.title} dueDate={it.task.due_date} onOpenTasks={() => onNavigate('tasks')} />
+                    </AIMessage>
+                  )
+                }
+
+                if (it.kind === 'roadmap_update') {
+                  return (
+                    <AIMessage key={it.id} showAvatar={false}>
+                      <RoadmapUpdateCard progress={it.progress} onOpenRoadmap={() => onNavigate('roadmap')} />
+                    </AIMessage>
+                  )
+                }
+
+                if (it.kind === 'opportunity_suggestion') {
+                  return (
+                    <AIMessage key={it.id} showAvatar={false}>
+                      <OpportunitySuggestionCard
+                        opportunity={it.opportunity}
+                        matchScore={it.matchScore}
+                        onSave={() => handleSaveOpportunity(it.id, it.opportunity)}
+                        onView={() => onNavigate('opportunities')}
+                      />
+                    </AIMessage>
+                  )
+                }
+                if (it.kind === 'score_analysis') {
+  return (
+    <AIMessage key={it.id} showAvatar={false}>
+      <ScoreAnalysisCard analysis={it.analysis} />
+    </AIMessage>
+  )
+}
+
+if (it.kind === 'university_snapshot') {
+  return (
+    <AIMessage key={it.id} showAvatar={false}>
+      <UniversitySnapshotCard savedUniversity={it.savedUniversity} onView={() => onNavigate('universities')} />
+    </AIMessage>
+  )
+}
+
+if (it.kind === 'reminder_created') {
+  return (
+    <AIMessage key={it.id} showAvatar={false}>
+      <ReminderCreatedCard reminder={it.reminder} onOpenCalendar={() => onNavigate('calendar')} />
+    </AIMessage>
+  )
+}
+
+                if (it.kind === 'error') {
+                  return (
+                    <AIMessage key={it.id} showAvatar={false}>
+                      <Card className="p-4 shadow-panel border-dusty/40 max-w-sm">
+                        <p className="text-[13.5px] text-ink-700">Connection hiccup — not you.</p>
+                        <Button variant="quiet" size="sm" className="mt-2.5" onClick={() => { setItems((prev) => prev.filter((x) => x.id !== it.id)); handleSend(it.failedText) }}>
+                          Try again
+                        </Button>
+                      </Card>
+                    </AIMessage>
+                  )
+                }
+
+                // insight
                 return (
                   <AIMessage key={it.id} showAvatar={false}>
-                    <Card className="p-4 shadow-panel border-dusty/40">
-                      <p className="text-[13.5px] text-ink-700">
-                        I had trouble reaching Freshman AI just now — connection hiccup, not you.
-                      </p>
-                      <Button
-                        variant="quiet"
-                        size="sm"
-                        className="mt-2.5"
-                        onClick={() => {
-                          setItems((prev) => prev.filter((x) => x.id !== it.id))
-                          handleSend(it.failedText)
-                        }}
-                      >
-                        Try again
-                      </Button>
-                    </Card>
+                    {it.status === 'idle' && (
+                      <ProfileInsightCard
+                        title={it.insight.title}
+                        tags={it.insight.tags}
+                        body="I found something worth structuring into your portfolio."
+                        onAdd={() => handleAddInsight(it.id)}
+                        onDismiss={() => handleDismissInsight(it.id)}
+                      />
+                    )}
+                    {it.status === 'extracting' && (
+                      <div className="space-y-5 max-w-sm">
+                        <CastleBuildLoader label="Structuring your experience…" size={56} />
+                        <ExtractionProgress currentIndex={2} />
+                      </div>
+                    )}
+                    {it.status === 'added' && (
+                      <Card className="p-5 shadow-panel max-w-sm">
+                        <p className="text-[14px] text-ink-700">Added to your portfolio.</p>
+                        <p className="mt-1.5 font-serif text-[15px] text-navy-900">{it.insight.title}</p>
+                        <button onClick={() => onNavigate('portfolio')} className="mt-3 flex items-center gap-1 text-[13px] text-skyline-600 hover:underline">
+                          View in portfolio <ArrowRight size={13} />
+                        </button>
+                      </Card>
+                    )}
                   </AIMessage>
                 )
-              }
+              })}
 
-              return (
-                <AIMessage key={it.id} showAvatar={false}>
-                  {it.status === 'idle' && (
-                    <ProfileInsightCard
-                      title={it.insight.title}
-                      tags={it.insight.tags}
-                      body="I found something worth structuring into your portfolio."
-                      onAdd={() => handleAddInsight(it.id)}
-                      onDismiss={() => handleDismissInsight(it.id)}
-                    />
-                  )}
-
-                  {it.status === 'extracting' && (
-                    <div className="space-y-5">
-                      <CastleBuildLoader label="Structuring your experience…" size={56} />
-                      <ExtractionProgress currentIndex={2} />
-                    </div>
-                  )}
-
-                  {it.status === 'added' && (
-                    <Card className="p-5 shadow-panel">
-                      <p className="text-[14px] text-ink-700">Added to your portfolio.</p>
-                      <div className="mt-3.5 rounded-control bg-parchment-100 px-4 py-3.5">
-                        <div className="flex items-center justify-between">
-                          <p className="font-serif text-[15.5px] text-navy-900">{it.insight.title}</p>
-                          <span className="rounded-full bg-navy-900/[0.06] px-2.5 py-0.5 text-[11px] text-navy-800">
-                            {it.insight.tags?.[0]}
-                          </span>
-                        </div>
-                        <p className="mt-1.5 text-[13px] text-ink-700">{it.insight.summary}</p>
-                        <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-ink-500">
-                          {it.insight.impact && <span>Impact: {it.insight.impact}</span>}
-                          <span>Category: {it.insight.tags?.join(', ')}</span>
-                          {it.insight.skills?.length > 0 && <span>Skills: {it.insight.skills.join(', ')}</span>}
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => onNavigate('portfolio')}
-                        className="mt-3.5 flex items-center gap-1 text-[13px] text-skyline-600 hover:underline"
-                      >
-                        View in portfolio <ArrowRight size={13} />
-                      </button>
-                    </Card>
-                  )}
-                </AIMessage>
-              )
-            })}
-
-            {isStreaming && (
-              <AIMessage>
-                <MarkdownLite text={streamingText} className="text-[14.5px] leading-relaxed text-ink-700" />
-                <span className="ml-0.5 inline-block h-4 w-[2px] animate-pulse bg-navy-900/50 align-middle" />
-              </AIMessage>
-            )}
+              {isStreaming && (
+                streamingText ? (
+                  <AIMessage content={streamingText}>
+                    <MarkdownLite text={streamingText} className="text-[15px] leading-[1.7] text-ink-700" />
+                  </AIMessage>
+                ) : (
+                  <AIMessage showAvatar={false}><ThinkingStatus /></AIMessage>
+                )
+              )}
+            </div>
           </div>
 
-          <div className="relative z-10 px-8 pb-6">
-            <ChatInput
-              onSend={handleSend}
-              disabled={isStreaming || isParsingResume}
-              onUploadResume={handleUploadResume}
-              onVoiceClick={() => setVoiceModeOpen(true)}
-              voiceSupported={voice.supported}
-            />
+          <div className="px-8 pb-7">
+            <div className="mx-auto max-w-[820px]">
+              <ChatInput
+  onSend={handleSend}
+  disabled={isStreaming || isParsingResume}
+  onUploadResume={handleUploadResume}
+  onVoiceClick={() => setVoiceModeOpen(true)}
+  voiceSupported={voice.supported}
+  studentId={studentId}
+/>
+            </div>
           </div>
         </main>
 
-        <aside className="hidden xl:flex w-[320px] shrink-0 flex-col gap-5 overflow-y-auto border-l border-navy-900/[0.06] px-5 py-6">
-          <RecentAdditionsPanel items={recentAdditions} />
-          <SuggestedPanel title="Consider exploring Stanford's CS research program" deadline="Dec 15, 2025" />
-        </aside>
+        <ChatContextSidebar
+          memoryFacts={memoryFacts}
+          todaysFocus={[]}
+          suggestedOpportunity={null}
+          upcomingDeadlines={[]}
+          roadmapChanges={[]}
+          completeness={studentInfo.completeness}
+          onNavigate={onNavigate}
+        />
       </div>
 
       {voiceModeOpen && (
@@ -574,10 +618,7 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
           transcript={voice.transcript}
           onStart={voice.startListening}
           onStop={() => voice.submitTranscript()}
-          onClose={() => {
-            voice.cancelVoice()
-            setVoiceModeOpen(false)
-          }}
+          onClose={() => { voice.cancelVoice(); setVoiceModeOpen(false) }}
         />
       )}
     </div>
