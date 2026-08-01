@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Trophy, Trash2, Pencil } from 'lucide-react'
 import Sidebar from '../components/layout/Sidebar.jsx'
 import Card from '../components/ui/Card.jsx'
+import ChatBackground from '../components/chat/ChatBackground.jsx'
 import PortfolioEditOverlay from '../components/portfolio/PortfolioEditOverlay.jsx'
 import { supabase } from '../lib/supabase.js'
 
@@ -18,6 +19,8 @@ const TAG_TONES = {
 export default function PortfolioPage({ onNavigate, studentId }) {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
+  const [showAddForm, setShowAddForm] = useState(false)
+const [newItem, setNewItem] = useState({ title: '', summary: '', impact: '', tags: [] })
   const [activeTag, setActiveTag] = useState('All')
   const [editingItem, setEditingItem] = useState(null)
 
@@ -40,6 +43,20 @@ export default function PortfolioPage({ onNavigate, studentId }) {
     await supabase.from('portfolio_items').delete().eq('id', id)
   }
 
+  async function handleManualAdd() {
+  if (!newItem.title.trim()) return
+  const { data, error } = await supabase
+    .from('portfolio_items')
+    .insert({ student_id: studentId, title: newItem.title, summary: newItem.summary, impact: newItem.impact, tags: newItem.tags, skills: [], source_message: 'Added manually' })
+    .select('*')
+    .single()
+  if (!error) {
+    setItems((prev) => [data, ...prev])
+    setNewItem({ title: '', summary: '', impact: '', tags: [] })
+    setShowAddForm(false)
+    notify.success(`${data.title} added`)
+  }
+}
   async function handleSaveEdit(updated) {
     const { error } = await supabase.from('portfolio_items').update(updated).eq('id', editingItem.id)
     if (!error) {
@@ -54,10 +71,14 @@ export default function PortfolioPage({ onNavigate, studentId }) {
   return (
     <div className="flex h-screen bg-parchment-50">
       <Sidebar activePage="portfolio" onNavigate={onNavigate} />
-
+      <div className="relative flex-1 min-w-0">
+  <ChatBackground image="/picture2.png" /> {/* or picture3/4 depending on page */}
       <main className="flex-1 min-w-0 overflow-y-auto px-8 py-7">
         <header>
           <h1 className="font-serif text-[24px] text-navy-900">Your Portfolio</h1>
+          <button onClick={() => setShowAddForm(true)} className="flex items-center gap-1.5 rounded-control bg-navy-900 px-4 py-2 text-[13px] text-parchment-50 hover:bg-navy-800">
+   New activity
+</button>
           <p className="mt-1 text-[13.5px] text-ink-500">
             Every achievement, project, and role Freshman AI has structured from your conversations and documents.
           </p>
@@ -150,6 +171,7 @@ export default function PortfolioPage({ onNavigate, studentId }) {
           onClose={() => setEditingItem(null)}
         />
       )}
+    </div>
     </div>
   )
 }

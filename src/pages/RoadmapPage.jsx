@@ -5,6 +5,7 @@ import Card from '../components/ui/Card.jsx'
 import JourneyPillars from '../components/dashboard/JourneyPillars.jsx'
 import RoadmapPlayground from '../components/roadmap/RoadmapPlayground.jsx'
 import { supabase } from '../lib/supabase.js'
+import ChatBackground from '../components/chat/ChatBackground.jsx'
 import { generateRoadmap } from '../lib/groq.js'
 
 const STAGE_META = {
@@ -106,6 +107,8 @@ export default function RoadmapPage({ onNavigate, studentId, autoGenerate, onAut
   return (
     <div className="flex h-screen bg-parchment-50">
       <Sidebar activePage="roadmap" onNavigate={onNavigate} />
+      <div className="relative flex-1 min-w-0">
+  <ChatBackground image="/picture2.png" /> {/* or picture3/4 depending on page */}
 
       <main className="flex-1 min-w-0 overflow-y-auto px-8 py-7">
         <header>
@@ -189,6 +192,7 @@ export default function RoadmapPage({ onNavigate, studentId, autoGenerate, onAut
           </>
         )}
       </main>
+    </div>
     </div>
   )
 }

@@ -9,16 +9,14 @@ import ProfileInsightCard from '../components/chat/ProfileInsightCard.jsx'
 import ExtractionProgress from '../components/chat/ExtractionProgress.jsx'
 import CastleBuildLoader from '../components/chat/CastleBuildLoader.jsx'
 import ThinkingStatus from '../components/chat/ThinkingStatus.jsx'
-import { detectScoreMention, analyzeScore } from '../lib/scoreAnalysis.js'
-import { parseReminderIntent } from '../lib/reminderIntent.js'
-import { createReminder } from '../lib/reminders.js'
-import ScoreAnalysisCard from '../components/chat/cards/ScoreAnalysisCard.jsx'
-import UniversitySnapshotCard from '../components/chat/cards/UniversitySnapshotCard.jsx'
-import ReminderCreatedCard from '../components/chat/cards/ReminderCreatedCard.jsx'
 import ChatInput from '../components/chat/ChatInput.jsx'
 import TaskCreatedCard from '../components/chat/cards/TaskCreatedCard.jsx'
 import RoadmapUpdateCard from '../components/chat/cards/RoadmapUpdateCard.jsx'
 import OpportunitySuggestionCard from '../components/chat/cards/OpportunitySuggestionCard.jsx'
+import ScoreAnalysisCard from '../components/chat/cards/ScoreAnalysisCard.jsx'
+import UniversitySnapshotCard from '../components/chat/cards/UniversitySnapshotCard.jsx'
+import ReminderCreatedCard from '../components/chat/cards/ReminderCreatedCard.jsx'
+import ConfirmRemovalCard from '../components/chat/cards/ConfirmRemovalCard.jsx'
 import YouTubeEmbed, { extractYouTubeId } from '../components/chat/YouTubeEmbed.jsx'
 import MarkdownLite from '../components/chat/MarkdownLite.jsx'
 import Card from '../components/ui/Card.jsx'
@@ -29,7 +27,6 @@ import {
   extractProfileUpdate,
   extractProfileFromDocument,
   extractExplicitPortfolioRequest,
-  extractRemovalIntent,
   enrollmentYearFromGrade,
   generateRoadmap,
 } from '../lib/groq.js'
@@ -37,10 +34,15 @@ import { extractTextFromPdf } from '../lib/resumeParser.js'
 import { computeCompleteness, roadmapReadinessGaps } from '../lib/profileCompleteness.js'
 import { computeGaps } from '../lib/gapDetection.js'
 import { getSavedUniversities } from '../lib/universities.js'
-import { getOpportunities, saveOpportunity, scoreMatch } from '../lib/opportunities.js'
+import { getOpportunities, getOpportunityApplications, saveOpportunity, scoreMatch } from '../lib/opportunities.js'
 import { createTask } from '../lib/tasks.js'
 import { parseTaskIntent } from '../lib/taskIntent.js'
+import { parseReminderIntent } from '../lib/reminderIntent.js'
+import { createReminder } from '../lib/reminders.js'
 import { findRelevantVideo } from '../lib/freshmanVideos.js'
+import { detectRemoveIntent, findMatchingPortfolioItem, deletePortfolioItem } from '../lib/portfolioControl.js'
+import { detectRemoveTaskIntent, findMatchingTask, deleteTaskById } from '../lib/taskControl.js'
+import { detectScoreMention, analyzeScore } from '../lib/scoreAnalysis.js'
 import { withRetry } from '../lib/withRetry.js'
 import { canCallNow, msUntilNextCall } from '../lib/rateLimiter.js'
 import { notify } from '../lib/toast.js'
@@ -57,7 +59,6 @@ function nextId() {
 
 const ROADMAP_INTENT = /\b(build|make|create|generate|show)\b.*\broadmap\b|\broadmap\b.*\b(build|make|create|generate)\b/i
 const ADD_TO_PORTFOLIO_INTENT = /\b(add|put|save)\b.*\b(this|that|it)\b.*\bportfolio\b|\bportfolio\b.*\b(add|put|save)\b/i
-const REMOVE_INTENT = /\b(remove|delete|take out|get rid of)\b.*\b(portfolio|that|this|it)?\b/i
 
 export default function ChatPage({ onNavigate, studentId, initialName }) {
   const [items, setItems] = useState([])
@@ -66,6 +67,7 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
   const [voiceModeOpen, setVoiceModeOpen] = useState(false)
   const [isParsingResume, setIsParsingResume] = useState(false)
   const [memoryFacts, setMemoryFacts] = useState([])
+  const [recentAdditions, setRecentAdditions] = useState([])
   const [hasOfferedRoadmap, setHasOfferedRoadmap] = useState(false)
   const [studentInfo, setStudentInfo] = useState({
     name: initialName || 'Student',
@@ -73,8 +75,6 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     completeness: 0,
   })
   const scrollRef = useRef(null)
-  const shownActivityTitles = useRef(new Set())
-  const suggestedOpportunityIds = useRef(new Set())
 
   const voice = useVoiceMode({ onSend: handleSend })
 
@@ -99,9 +99,19 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
         )
       }
 
+      const { data: portfolioItems } = await supabase
+        .from('portfolio_items')
+        .select('*')
+        .eq('student_id', studentId)
+        .order('created_at', { ascending: false })
+        .limit(5)
+
+      if (portfolioItems?.length) {
+        setRecentAdditions(portfolioItems.map((it) => ({ title: it.title, when: new Date(it.created_at).toLocaleDateString() })))
+      }
+
       const { data: studentRow } = await supabase.from('students').select('name').eq('id', studentId).single()
       const { data: profile } = await supabase.from('student_profile').select('*').eq('student_id', studentId).maybeSingle()
-      const { data: portfolioItems } = await supabase.from('portfolio_items').select('*').eq('student_id', studentId)
       const { data: existingRoadmap } = await supabase.from('roadmap_steps').select('id').eq('student_id', studentId).limit(1)
 
       setHasOfferedRoadmap(!!existingRoadmap?.length)
@@ -177,22 +187,12 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     setItems((prev) => [...prev, { id: nextId(), kind: 'insight', status: 'idle', insight: { ...activity, sourceMessage } }])
   }
 
-  async function maybeShowInsight(newest, text) {
-    const key = newest.title?.trim().toLowerCase()
-    if (!key) return
-
-    const { data: existing } = await supabase
-      .from('portfolio_items')
-      .select('id, title')
-      .eq('student_id', studentId)
-
-    const alreadyExists = existing?.some((p) => p.title?.trim().toLowerCase() === key)
-    const alreadyShownThisSession = shownActivityTitles.current.has(key)
-
-    if (!alreadyExists && !alreadyShownThisSession) {
-      shownActivityTitles.current.add(key)
-      pushInsightCard(newest, text)
-    }
+  async function maybeCreateReminder(text) {
+    const parsed = parseReminderIntent(text)
+    if (!parsed) return false
+    const reminder = await createReminder(studentId, parsed)
+    setItems((prev) => [...prev, { id: nextId(), kind: 'reminder_created', reminder }])
+    return true
   }
 
   async function maybeCreateTask(text) {
@@ -202,37 +202,71 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     setItems((prev) => [...prev, { id: nextId(), kind: 'task_created', task }])
   }
 
-  async function maybeCreateReminder(text) {
-  const parsed = parseReminderIntent(text)
-  if (!parsed) return
-  const reminder = await createReminder(studentId, parsed)
-  setItems((prev) => [...prev, { id: nextId(), kind: 'reminder_created', reminder }])
-}
-
-async function maybeAnalyzeScore(text) {
-  const scoreInfo = detectScoreMention(text)
-  if (!scoreInfo) return
-  const savedUniversities = await getSavedUniversities(studentId)
-  const analysis = analyzeScore(scoreInfo, savedUniversities)
-  setItems((prev) => [...prev, { id: nextId(), kind: 'score_analysis', analysis }])
-}
-
-async function maybeShowUniversitySnapshot(text) {
-  const savedUniversities = await getSavedUniversities(studentId)
-  const mentioned = savedUniversities.find((s) => text.toLowerCase().includes(s.universities?.name?.toLowerCase()))
-  if (mentioned) {
-    setItems((prev) => [...prev, { id: nextId(), kind: 'university_snapshot', savedUniversity: mentioned }])
+  async function maybeAnalyzeScore(text) {
+    const scoreInfo = detectScoreMention(text)
+    if (!scoreInfo) return
+    const savedUniversities = await getSavedUniversities(studentId)
+    const analysis = analyzeScore(scoreInfo, savedUniversities)
+    setItems((prev) => [...prev, { id: nextId(), kind: 'score_analysis', analysis }])
   }
-}
 
-  async function maybeSuggestOpportunity(insight) {
-    if (!insight.major && !insight.interests?.length) return
-    const all = await getOpportunities({})
+  async function maybeShowUniversitySnapshot(text) {
+    const savedUniversities = await getSavedUniversities(studentId)
+    const mentioned = savedUniversities.find((s) => s.universities?.name && text.toLowerCase().includes(s.universities.name.toLowerCase()))
+    if (mentioned) {
+      setItems((prev) => [...prev, { id: nextId(), kind: 'university_snapshot', savedUniversity: mentioned }])
+    }
+  }
+
+  async function maybeOfferPortfolioRemoval(text) {
+    if (!detectRemoveIntent(text)) return false
+    const match = await findMatchingPortfolioItem(studentId, text)
+    if (!match) {
+      setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: "I couldn't find anything close to that in your portfolio — check your Portfolio page?", time: timeNow() }])
+      return true
+    }
+    setItems((prev) => [...prev, { id: nextId(), kind: 'confirm_removal', target: 'portfolio', itemId: match.id, itemName: match.title, confidence: match.confidence }])
+    return true
+  }
+
+  async function maybeOfferTaskRemoval(text) {
+    if (!detectRemoveTaskIntent(text)) return false
+    const match = await findMatchingTask(studentId, text)
+    if (!match) {
+      setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: "I couldn't find anything close to that task — check your Tasks page?", time: timeNow() }])
+      return true
+    }
+    setItems((prev) => [...prev, { id: nextId(), kind: 'confirm_removal', target: 'task', itemId: match.id, itemName: match.title, confidence: match.confidence }])
+    return true
+  }
+
+  async function handleConfirmRemoval(item) {
+    if (item.target === 'portfolio') {
+      await deletePortfolioItem(item.itemId)
+      notify.success(`${item.itemName} removed from your portfolio`)
+    } else {
+      await deleteTaskById(item.itemId)
+      notify.success(`${item.itemName} removed from your tasks`)
+    }
+    updateItem(item.id, { resolved: true })
+  }
+
+  async function maybeSuggestOpportunity() {
+    const [all, savedOpps] = await Promise.all([
+      getOpportunities({}),
+      getOpportunityApplications(studentId),
+    ])
+
+    const savedIds = new Set(savedOpps.map((s) => s.opportunity.id))
     const { data: profile } = await supabase.from('student_profile').select('*').eq('student_id', studentId).maybeSingle()
-    const ranked = all.map((o) => ({ ...o, matchScore: scoreMatch(o, profile) })).sort((a, b) => b.matchScore - a.matchScore)
+
+    const ranked = all
+      .filter((o) => !savedIds.has(o.id))
+      .map((o) => ({ ...o, matchScore: scoreMatch(o, profile) }))
+      .sort((a, b) => b.matchScore - a.matchScore)
+
     const top = ranked[0]
-    if (top && top.matchScore >= 70 && !suggestedOpportunityIds.current.has(top.id)) {
-      suggestedOpportunityIds.current.add(top.id)
+    if (top && top.matchScore >= 70) {
       setItems((prev) => [...prev, { id: nextId(), kind: 'opportunity_suggestion', opportunity: top, matchScore: top.matchScore }])
     }
   }
@@ -266,56 +300,14 @@ async function maybeShowUniversitySnapshot(text) {
     const detectedGaps = computeGaps(profile, portfolioItems || [], savedUniversities || [])
     const { steps } = await generateRoadmap(profile, portfolioItems, detectedGaps)
 
-    let progress = 0
     if (steps.length > 0) {
       await supabase.from('roadmap_steps').delete().eq('student_id', studentId)
       const rows = steps.map((s, i) => ({ student_id: studentId, stage: s.stage, title: s.title, description: s.description, status: 'pending', order_index: i }))
       await supabase.from('roadmap_steps').insert(rows)
     }
 
-    setItems((prev) => [...prev, { id: nextId(), kind: 'roadmap_update', progress }])
-
+    setItems((prev) => [...prev, { id: nextId(), kind: 'roadmap_update', progress: 0 }])
     setTimeout(() => onNavigate('roadmap', { autoGenerate: false }), 900)
-  }
-
-  async function handleRemoveRequest(text) {
-    const userItem = { id: nextId(), kind: 'user', content: text, time: timeNow() }
-    setItems((prev) => [...prev, userItem])
-    saveMessage('user', text)
-
-    const { data: existing } = await supabase.from('portfolio_items').select('id, title').eq('student_id', studentId)
-
-    if (!existing?.length) {
-      const reply = "Your portfolio's empty right now, so there's nothing for me to remove."
-      setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: reply, time: timeNow() }])
-      saveMessage('assistant', reply)
-      return
-    }
-
-    const result = await extractRemovalIntent(text, existing.map((e) => e.title))
-
-    if (!result.found) {
-      const reply = "I'm not sure which item you mean — can you say the exact name from your portfolio?"
-      setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: reply, time: timeNow() }])
-      saveMessage('assistant', reply)
-      return
-    }
-
-    const match = existing.find((e) => e.title.trim().toLowerCase() === result.matched_title.trim().toLowerCase())
-    if (!match) {
-      const reply = "I couldn't find an exact match for that in your portfolio — can you double check the name?"
-      setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: reply, time: timeNow() }])
-      saveMessage('assistant', reply)
-      return
-    }
-
-    await supabase.from('portfolio_items').delete().eq('id', match.id)
-    shownActivityTitles.current.delete(match.title.trim().toLowerCase())
-    notify.success(`${match.title} removed from your portfolio`)
-
-    const reply = `Done — removed "${match.title}" from your portfolio.`
-    setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: reply, time: timeNow() }])
-    saveMessage('assistant', reply)
   }
 
   async function handleSend(text) {
@@ -323,7 +315,7 @@ async function maybeShowUniversitySnapshot(text) {
 
     if (!canCallNow()) {
       const waitSec = Math.ceil(msUntilNextCall() / 1000)
-      setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: `Give me just a second — try again in a moment.`, time: timeNow() }])
+      setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: `One moment — try again in a second or two.`, time: timeNow() }])
       return
     }
 
@@ -332,19 +324,23 @@ async function maybeShowUniversitySnapshot(text) {
       return
     }
 
-    if (REMOVE_INTENT.test(text)) {
-      await handleRemoveRequest(text)
-      return
-    }
-
     const userItem = { id: nextId(), kind: 'user', content: text, time: timeNow() }
     setItems((prev) => [...prev, userItem])
     saveMessage('user', text)
 
-    await maybeCreateTask(text)
-    await maybeCreateReminder(text)
-await maybeAnalyzeScore(text)
-await maybeShowUniversitySnapshot(text)
+    // removal requests short-circuit — no need to also call the AI
+    const handledRemoval = (await maybeOfferPortfolioRemoval(text)) || (await maybeOfferTaskRemoval(text))
+    if (handledRemoval) return
+
+    // reminder takes priority over task (a "submit X" reminder shouldn't also become a task)
+    const reminderCreated = await maybeCreateReminder(text)
+    if (!reminderCreated) {
+      await maybeCreateTask(text)
+    }
+
+    // pure regex/local checks — no Groq calls, safe to always run
+    await maybeAnalyzeScore(text)
+    await maybeShowUniversitySnapshot(text)
 
     setIsStreaming(true)
     setStreamingText('')
@@ -360,7 +356,8 @@ await maybeShowUniversitySnapshot(text)
         () => chatWithAdvisorStream(historyForModel, (chunk) => setStreamingText((prev) => prev + chunk), studentInfo.name !== 'Student' ? studentInfo.name.split(' ')[0] : null),
         { retries: 2 }
       )
-    } catch {
+    } catch (err) {
+      console.error('Chat request failed:', err)
       failed = true
     }
 
@@ -378,39 +375,30 @@ await maybeShowUniversitySnapshot(text)
     setStreamingText('')
     saveMessage('assistant', full)
 
-    // relevant Freshman Academy video, if the topic matches one we have
-    
-
-    const isSubstantive = text.trim().split(/\s+/).length >= 4
-
-const video = isSubstantive ? findRelevantVideo(text) : null
-if (video) {
-  setItems((prev) => [...prev, { id: nextId(), kind: 'video', videoId: video.videoId, title: video.title }])
-}
-
-if (isSubstantive && ADD_TO_PORTFOLIO_INTENT.test(text)) {
-  // ...existing block unchanged
-}
+    const video = findRelevantVideo(text)
     if (video) {
       setItems((prev) => [...prev, { id: nextId(), kind: 'video', videoId: video.videoId, title: video.title }])
     }
+
+    const isSubstantive = text.trim().split(/\s+/).length >= 4
+    if (!isSubstantive) return // "hey", "thanks", "ok" — nothing worth a Groq extraction call for
 
     if (ADD_TO_PORTFOLIO_INTENT.test(text)) {
       const recentUserMessages = [...items, userItem].filter((it) => it.kind === 'user').map((it) => it.content)
       const explicit = await extractExplicitPortfolioRequest(recentUserMessages)
       if (explicit.found) {
-        await maybeShowInsight({ title: explicit.title, tags: explicit.tags, summary: explicit.summary, impact: explicit.impact, skills: explicit.skills }, text)
+        pushInsightCard({ title: explicit.title, tags: explicit.tags, summary: explicit.summary, impact: explicit.impact, skills: explicit.skills }, text)
       }
+      return // explicit add handled — skip the passive extraction pass below to save a Groq call
     }
 
-    if (!isSubstantive) return // "hey", "thanks", "ok" etc — nothing to extract, stop here
+    const fullHistoryForExtraction = [...historyForModel, { role: 'assistant', content: full }]
+    const insight = await extractProfileUpdate(fullHistoryForExtraction)
 
-const fullHistoryForExtraction = [...historyForModel, { role: 'assistant', content: full }]
-const insight = await extractProfileUpdate(fullHistoryForExtraction)
-
-    if (insight.activities.length > 0) {
-      const newest = insight.activities[insight.activities.length - 1]
-      await maybeShowInsight(newest, text)
+    const newActivity = insight.activities.find((a) => !recentAdditions.some((r) => r.title === a.title))
+    if (newActivity) {
+      pushInsightCard(newActivity, text)
+      setRecentAdditions((prev) => [{ title: newActivity.title, when: 'Just now' }, ...prev].slice(0, 5))
     }
 
     const hasProfileUpdates =
@@ -419,11 +407,16 @@ const insight = await extractProfileUpdate(fullHistoryForExtraction)
       insight.gpa || insight.sat_score || insight.act_score
 
     if (hasProfileUpdates) {
-      const merged = await persistProfileMerge(insight, 0)
-      await maybeSuggestOpportunity(merged)
+      const merged = await persistProfileMerge(insight, recentAdditions.length)
+
+      // only suggest an opportunity when there's a genuinely new signal to react to,
+      // not on every message where major/interests still happen to be present
+      if (newActivity || insight.target_schools.length > 0) {
+        await maybeSuggestOpportunity()
+      }
 
       if (!hasOfferedRoadmap) {
-        const gaps = roadmapReadinessGaps(merged, 0)
+        const gaps = roadmapReadinessGaps(merged, recentAdditions.length)
         if (gaps.length === 0) {
           setHasOfferedRoadmap(true)
           const offerText = `By the way, ${studentInfo.name.split(' ')[0]} — I think I have enough now to build you a real roadmap. Want me to put one together?`
@@ -480,6 +473,7 @@ const insight = await extractProfileUpdate(fullHistoryForExtraction)
         await supabase.from('portfolio_items').insert(
           insight.activities.map((a) => ({ student_id: studentId, title: a.title, tags: a.tags, summary: a.summary, impact: a.impact || '', skills: a.skills, source_message: `Imported from ${file.name}` }))
         )
+        setRecentAdditions((prev) => [...insight.activities.map((a) => ({ title: a.title, when: 'Just now' })), ...prev].slice(0, 5))
       }
 
       await persistProfileMerge(insight, insight.activities.length)
@@ -534,7 +528,7 @@ const insight = await extractProfileUpdate(fullHistoryForExtraction)
 
                 if (it.kind === 'assistant') {
                   return (
-                    <AIMessage key={it.id} content={it.content}>
+                    <AIMessage key={it.id}>
                       <MarkdownLite text={it.content} className="text-[15px] leading-[1.7] text-ink-700" />
                     </AIMessage>
                   )
@@ -552,6 +546,14 @@ const insight = await extractProfileUpdate(fullHistoryForExtraction)
                   return (
                     <AIMessage key={it.id} showAvatar={false}>
                       <TaskCreatedCard title={it.task.title} dueDate={it.task.due_date} onOpenTasks={() => onNavigate('tasks')} />
+                    </AIMessage>
+                  )
+                }
+
+                if (it.kind === 'reminder_created') {
+                  return (
+                    <AIMessage key={it.id} showAvatar={false}>
+                      <ReminderCreatedCard reminder={it.reminder} onOpenCalendar={() => onNavigate('calendar')} />
                     </AIMessage>
                   )
                 }
@@ -576,29 +578,40 @@ const insight = await extractProfileUpdate(fullHistoryForExtraction)
                     </AIMessage>
                   )
                 }
+
                 if (it.kind === 'score_analysis') {
-  return (
-    <AIMessage key={it.id} showAvatar={false}>
-      <ScoreAnalysisCard analysis={it.analysis} />
-    </AIMessage>
-  )
-}
+                  return (
+                    <AIMessage key={it.id} showAvatar={false}>
+                      <ScoreAnalysisCard analysis={it.analysis} />
+                    </AIMessage>
+                  )
+                }
 
-if (it.kind === 'university_snapshot') {
-  return (
-    <AIMessage key={it.id} showAvatar={false}>
-      <UniversitySnapshotCard savedUniversity={it.savedUniversity} onView={() => onNavigate('universities')} />
-    </AIMessage>
-  )
-}
+                if (it.kind === 'university_snapshot') {
+                  return (
+                    <AIMessage key={it.id} showAvatar={false}>
+                      <UniversitySnapshotCard savedUniversity={it.savedUniversity} onView={() => onNavigate('universities')} />
+                    </AIMessage>
+                  )
+                }
 
-if (it.kind === 'reminder_created') {
-  return (
-    <AIMessage key={it.id} showAvatar={false}>
-      <ReminderCreatedCard reminder={it.reminder} onOpenCalendar={() => onNavigate('calendar')} />
-    </AIMessage>
-  )
-}
+                if (it.kind === 'confirm_removal') {
+                  return (
+                    <AIMessage key={it.id} showAvatar={false}>
+                      {it.resolved ? (
+                        <p className="text-[13px] italic text-ink-500">Removed.</p>
+                      ) : (
+                        <ConfirmRemovalCard
+                          label={it.target === 'portfolio' ? 'from your portfolio' : 'from your tasks'}
+                          itemName={it.itemName}
+                          confidence={it.confidence}
+                          onConfirm={() => handleConfirmRemoval(it)}
+                          onCancel={() => updateItem(it.id, { resolved: true })}
+                        />
+                      )}
+                    </AIMessage>
+                  )
+                }
 
                 if (it.kind === 'error') {
                   return (
@@ -613,7 +626,7 @@ if (it.kind === 'reminder_created') {
                   )
                 }
 
-                // insight
+                // portfolio insight
                 return (
                   <AIMessage key={it.id} showAvatar={false}>
                     {it.status === 'idle' && (
@@ -646,7 +659,7 @@ if (it.kind === 'reminder_created') {
 
               {isStreaming && (
                 streamingText ? (
-                  <AIMessage content={streamingText}>
+                  <AIMessage>
                     <MarkdownLite text={streamingText} className="text-[15px] leading-[1.7] text-ink-700" />
                   </AIMessage>
                 ) : (
@@ -659,13 +672,13 @@ if (it.kind === 'reminder_created') {
           <div className="px-8 pb-7">
             <div className="mx-auto max-w-[820px]">
               <ChatInput
-  onSend={handleSend}
-  disabled={isStreaming || isParsingResume}
-  onUploadResume={handleUploadResume}
-  onVoiceClick={() => setVoiceModeOpen(true)}
-  voiceSupported={voice.supported}
-  studentId={studentId}
-/>
+                onSend={handleSend}
+                disabled={isStreaming || isParsingResume}
+                onUploadResume={handleUploadResume}
+                onVoiceClick={() => setVoiceModeOpen(true)}
+                voiceSupported={voice.supported}
+                studentId={studentId}
+              />
             </div>
           </div>
         </main>

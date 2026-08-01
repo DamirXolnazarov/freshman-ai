@@ -1,8 +1,5 @@
-// Simple client-side cooldown — prevents rapid-fire spam (accidental
-// double-sends, someone mashing enter) from burning through Groq's rate
-// limit. Not a real quota system, just a sane guard against the most
-// common failure mode.
-const MIN_INTERVAL_MS = 1200
+const MIN_INTERVAL_MS = 3000
+
 let lastCallAt = 0
 
 export function canCallNow() {
@@ -13,6 +10,5 @@ export function canCallNow() {
 }
 
 export function msUntilNextCall() {
-  const remaining = MIN_INTERVAL_MS - (Date.now() - lastCallAt)
-  return Math.max(0, remaining)
+  return Math.max(0, MIN_INTERVAL_MS - (Date.now() - lastCallAt))
 }
