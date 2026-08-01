@@ -12,6 +12,9 @@ import CommandPalette from './components/CommandPalette.jsx'
 import OpportunitiesPage from './pages/OpportunitiesPage.jsx'
 import { useCommandPalette } from './hooks/useCommandPalette.js'
 import { supabase } from './lib/supabase.js'
+import TasksPage from './pages/TasksPage.jsx'
+import CalendarPage from './pages/CalendarPage.jsx'
+import ProfilePage from './pages/ProfilePage.jsx'
 import { ensureStudentRow } from './lib/auth.js'
 
 export default function App() {
@@ -97,6 +100,9 @@ export default function App() {
       {page === 'essays' && <EssaysPage onNavigate={handleNavigate} studentId={studentId} />}
       {page === 'applications' && <ApplicationsPage onNavigate={handleNavigate} studentId={studentId} />}
       {page === 'opportunities' && <OpportunitiesPage onNavigate={handleNavigate} studentId={studentId} />}
+      {page === 'tasks' && <TasksPage onNavigate={handleNavigate} studentId={studentId} />}
+{page === 'calendar' && <CalendarPage onNavigate={handleNavigate} studentId={studentId} />}
+{page === 'profile' && <ProfilePage onNavigate={handleNavigate} studentId={studentId} />}
     </>
   )
 }

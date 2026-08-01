@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { Plus, PenLine } from 'lucide-react'
 import Sidebar from '../components/layout/Sidebar.jsx'
 import Card from '../components/ui/Card.jsx'
+import ReviewedEssayView from '../components/essays/ReviewedEssayView.jsx'
+import { getEssayReview } from '../lib/essayReviews.js'
 import EssayEditorOverlay from '../components/essays/EssayEditorOverlay.jsx'
 import { getEssays, createEssay, wordCount } from '../lib/essays.js'
 
@@ -9,6 +11,17 @@ export default function EssaysPage({ onNavigate, studentId }) {
   const [essays, setEssays] = useState([])
   const [loading, setLoading] = useState(true)
   const [activeEssay, setActiveEssay] = useState(null)
+  const [viewingReview, setViewingReview] = useState(null)
+
+async function handleOpenReview(essay) {
+  const review = await getEssayReview(essay.id)
+  if (review?.status === 'completed') {
+    setViewingReview({ essay, review })
+  }
+}
+
+// in each essay Card, add a small badge if reviewed (requires loading review status per card,
+// or simplest: fetch review status alongside essays in one query join if you want it eager-loaded)
 
   useEffect(() => {
     if (!studentId) return

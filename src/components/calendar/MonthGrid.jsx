@@ -29,8 +29,7 @@ export default function MonthGrid({ year, month, events, onDayClick }) {
           if (!day) return <div key={i} />
           const dateObj = new Date(year, month, day)
           const dayEvents = eventsForDay(events, dateObj)
-          const isToday =
-            today.getFullYear() === year && today.getMonth() === month && today.getDate() === day
+          const isToday = today.getFullYear() === year && today.getMonth() === month && today.getDate() === day
 
           return (
             <button
@@ -43,7 +42,7 @@ export default function MonthGrid({ year, month, events, onDayClick }) {
               <span className={`text-[11.5px] ${isToday ? 'font-medium text-gold-600' : 'text-ink-700'}`}>{day}</span>
               <div className="mt-auto flex gap-1">
                 {dayEvents.slice(0, 3).map((e) => (
-                  <span key={e.id} className={`h-1.5 w-1.5 rounded-full ${TYPE_DOT[e.type]}`} />
+                  <span key={e.id} className={`h-1.5 w-1.5 rounded-full ${TYPE_DOT[e.type] || 'bg-ink-500'}`} />
                 ))}
               </div>
             </button>

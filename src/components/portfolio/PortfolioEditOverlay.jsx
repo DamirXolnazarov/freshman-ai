@@ -51,7 +51,7 @@ export default function PortfolioEditOverlay({ item, onSave, onClose }) {
 
   function handleClose() {
     setIsClosing(true)
-    setTimeout(onClose, 220) // matches exit transition duration below
+    setTimeout(onClose, 220)
   }
 
   async function handleSave() {
@@ -69,7 +69,6 @@ export default function PortfolioEditOverlay({ item, onSave, onClose }) {
   }
 
   const skillsList = draft.skills.split(',').map((s) => s.trim()).filter(Boolean)
-  const previewKey = `${draft.title}|${draft.summary}|${draft.impact}` // re-triggers settle animation on change
 
   return (
     <AnimatePresence>
@@ -99,7 +98,7 @@ export default function PortfolioEditOverlay({ item, onSave, onClose }) {
               transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
             >
               <div className="flex items-center justify-between">
-                <p className="text-[11.5px] font-medium tracking-[0.14em] text-ink-500 uppercase">Edit entry</p>
+                <p className="text-[11.5px] font-medium tracking-[0.14em] text-ink-500 uppercase">{item.id ? 'Edit entry' : 'New activity'}</p>
                 <button onClick={handleClose} className="text-ink-500/60 hover:text-ink-900" aria-label="Close">
                   <X size={18} />
                 </button>
@@ -190,13 +189,10 @@ export default function PortfolioEditOverlay({ item, onSave, onClose }) {
               exit={{ opacity: 0, scale: 0.97 }}
               transition={{ duration: 0.32, delay: 0.05, ease: [0.22, 1, 0.36, 1] }}
             >
-              <motion.div
-                key={previewKey}
-                initial={{ opacity: 0.6, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.18, ease: 'easeOut' }}
-                className="w-full max-w-sm rounded-card bg-white p-6 shadow-raised"
-              >
+              {/* no key here anymore — this card now updates in place on
+                  every keystroke instead of unmounting/remounting, which
+                  was causing the "rises from bottom" replay glitch */}
+              <div className="w-full max-w-sm rounded-card bg-white p-6 shadow-raised">
                 <div className="flex items-start gap-2.5">
                   <Trophy size={17} className="mt-0.5 shrink-0 text-gold-500" />
                   <p className="font-serif text-[17px] leading-snug text-navy-900">
@@ -236,7 +232,7 @@ export default function PortfolioEditOverlay({ item, onSave, onClose }) {
                     ))}
                   </AnimatePresence>
                 </div>
-              </motion.div>
+              </div>
             </motion.div>
           </div>
         </motion.div>

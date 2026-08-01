@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { X, Trash2, Sparkles, Loader2, Save } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { requestEssayReview, getEssayReview } from '../../lib/essayReviews.js'
+import { CheckCircle2, Clock } from 'lucide-react'
 import { updateEssay, deleteEssay, wordCount } from '../../lib/essays.js'
 import { polishEssay } from '../../lib/groq.js'
 
@@ -12,6 +14,8 @@ export default function EssayEditorOverlay({ essay, onClose, onSaved, onDeleted 
     content: essay.content || '',
   })
   const [saving, setSaving] = useState(false)
+  const [review, setReview] = useState(null)
+const [requestingReview, setRequestingReview] = useState(false)
   const [polishing, setPolishing] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
 
@@ -19,6 +23,11 @@ export default function EssayEditorOverlay({ essay, onClose, onSaved, onDeleted 
     setIsClosing(true)
     setTimeout(onClose, 200)
   }
+  useEffect(() => {
+  if (essay.id) {
+    getEssayReview(essay.id).then(setReview)
+  }
+}, [essay.id])
 
   async function handlePolish() {
     if (!draft.content.trim() || polishing) return
@@ -42,6 +51,13 @@ export default function EssayEditorOverlay({ essay, onClose, onSaved, onDeleted 
     onDeleted?.(essay.id)
     handleClose()
   }
+
+  async function handleRequestReview() {
+  setRequestingReview(true)
+  const created = await requestEssayReview(essay.studentId || essay.student_id, essay.id)
+  setReview(created)
+  setRequestingReview(false)
+}
 
   const words = wordCount(draft.content)
 
@@ -116,6 +132,28 @@ export default function EssayEditorOverlay({ essay, onClose, onSaved, onDeleted 
                   {polishing ? 'Polishing…' : 'Polish with AI'}
                 </button>
               </div>
+
+              {essay.id && (
+  review ? (
+    <div className="flex items-center gap-1.5 text-[12px] text-ink-500">
+      {review.status === 'completed' ? (
+        <><CheckCircle2 size={13} className="text-sage" /> Review ready</>
+      ) : (
+        <><Clock size={13} className="text-gold-500" /> Review in progress</>
+      )}
+    </div>
+  ) : (
+    words >= 150 && (
+      <button
+        onClick={handleRequestReview}
+        disabled={requestingReview}
+        className="flex items-center gap-1.5 rounded-control border border-gold-500/40 bg-gold-500/[0.08] px-3 py-1.5 text-[12px] font-medium text-gold-700 hover:bg-gold-500/[0.14] disabled:opacity-50"
+      >
+        {requestingReview ? 'Requesting…' : 'Request human review'}
+      </button>
+    )
+  )
+)}
 
               <div className="flex items-center gap-2">
                 <button onClick={handleDelete} className="text-ink-500/50 hover:text-[#8B5A5A]" aria-label="Delete essay">

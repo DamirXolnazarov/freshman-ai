@@ -98,6 +98,10 @@ advisor, across a conversation. Extract a cumulative snapshot of every fact EXPL
 these messages. Never guess or infer beyond what was actually said. If something was never
 mentioned, use null or an empty array.
 
+If the message is a greeting, small talk, or contains no genuine new information, return every
+field as empty/null. Returning nothing is correct and expected for most casual messages — do not
+invent an achievement, school, or fact to fill the schema.
+
 These are the student's own words only — nothing from an advisor is included. Do not extract
 anything that sounds like a suggestion, plan, or recommendation; only extract what the student
 themselves claims about their own life, activities, stats, or goals.

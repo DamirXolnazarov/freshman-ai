@@ -1,14 +1,20 @@
+import { getSavedUniversities } from './universities.js'
+import { getOpportunityApplications } from './opportunities.js'
+import { getTasks } from './tasks.js'
 import { getReminders } from './reminders.js'
 
-// add inside getCalendarEvents, alongside the existing Promise.all:
-// (full updated function below — replace the existing one)
 export async function getCalendarEvents(studentId) {
-  const [savedUnis, oppApplications, taskList, reminderList] = await Promise.all([
+  const [savedUnisResult, oppAppsResult, tasksResult, remindersResult] = await Promise.allSettled([
     getSavedUniversities(studentId),
     getOpportunityApplications(studentId),
     getTasks(studentId),
     getReminders(studentId),
   ])
+
+  const savedUnis = savedUnisResult.status === 'fulfilled' ? savedUnisResult.value : []
+  const oppApplications = oppAppsResult.status === 'fulfilled' ? oppAppsResult.value : []
+  const taskList = tasksResult.status === 'fulfilled' ? tasksResult.value : []
+  const reminderList = remindersResult.status === 'fulfilled' ? remindersResult.value : []
 
   const events = []
 
@@ -21,7 +27,7 @@ export async function getCalendarEvents(studentId) {
   })
 
   oppApplications.forEach((app) => {
-    if (!app.opportunity.deadline) return
+    if (!app.opportunity?.deadline) return
     events.push({ id: `opp-${app.opportunity.id}`, date: app.opportunity.deadline, title: app.opportunity.name, type: 'opportunity' })
   })
 
@@ -35,4 +41,16 @@ export async function getCalendarEvents(studentId) {
   })
 
   return events
+}
+
+export function eventsForMonth(events, year, month) {
+  return events.filter((e) => {
+    const d = new Date(e.date)
+    return d.getFullYear() === year && d.getMonth() === month
+  })
+}
+
+export function eventsForDay(events, dateObj) {
+  const key = dateObj.toISOString().slice(0, 10)
+  return events.filter((e) => e.date === key)
 }

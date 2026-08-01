@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
-import { Trophy, Trash2, Pencil } from 'lucide-react'
+import { Trophy, Trash2, Pencil, Plus } from 'lucide-react'
 import Sidebar from '../components/layout/Sidebar.jsx'
 import Card from '../components/ui/Card.jsx'
-import ChatBackground from '../components/chat/ChatBackground.jsx'
 import PortfolioEditOverlay from '../components/portfolio/PortfolioEditOverlay.jsx'
+import { notify } from '../lib/toast.js'
 import { supabase } from '../lib/supabase.js'
 
 const TAG_TONES = {
@@ -16,13 +16,14 @@ const TAG_TONES = {
   Service: 'bg-ink-500/10 text-ink-700',
 }
 
+const BLANK_ITEM = { id: null, title: '', summary: '', impact: '', skills: [], tags: [] }
+
 export default function PortfolioPage({ onNavigate, studentId }) {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
-  const [showAddForm, setShowAddForm] = useState(false)
-const [newItem, setNewItem] = useState({ title: '', summary: '', impact: '', tags: [] })
   const [activeTag, setActiveTag] = useState('All')
   const [editingItem, setEditingItem] = useState(null)
+  const [creatingNew, setCreatingNew] = useState(false)
 
   useEffect(() => {
     if (!studentId) return
@@ -41,28 +42,48 @@ const [newItem, setNewItem] = useState({ title: '', summary: '', impact: '', tag
   async function handleDelete(id) {
     setItems((prev) => prev.filter((it) => it.id !== id))
     await supabase.from('portfolio_items').delete().eq('id', id)
+    notify.info('Removed from portfolio')
   }
 
-  async function handleManualAdd() {
-  if (!newItem.title.trim()) return
-  const { data, error } = await supabase
-    .from('portfolio_items')
-    .insert({ student_id: studentId, title: newItem.title, summary: newItem.summary, impact: newItem.impact, tags: newItem.tags, skills: [], source_message: 'Added manually' })
-    .select('*')
-    .single()
-  if (!error) {
-    setItems((prev) => [data, ...prev])
-    setNewItem({ title: '', summary: '', impact: '', tags: [] })
-    setShowAddForm(false)
-    notify.success(`${data.title} added`)
-  }
-}
   async function handleSaveEdit(updated) {
     const { error } = await supabase.from('portfolio_items').update(updated).eq('id', editingItem.id)
     if (!error) {
       setItems((prev) => prev.map((it) => (it.id === editingItem.id ? { ...it, ...updated } : it)))
+      notify.success('Updated')
+    } else {
+      notify.error("Couldn't save changes")
     }
     setEditingItem(null)
+  }
+
+  async function handleCreateNew(newFields) {
+    if (!newFields.title.trim()) {
+      notify.error('Give it a title first')
+      return
+    }
+    const { data, error } = await supabase
+      .from('portfolio_items')
+      .insert({
+        student_id: studentId,
+        title: newFields.title,
+        summary: newFields.summary,
+        impact: newFields.impact,
+        tags: newFields.tags,
+        skills: newFields.skills,
+        source_message: 'Added manually',
+      })
+      .select('*')
+      .single()
+
+    if (error) {
+      console.error('Failed to create portfolio item:', error)
+      notify.error("Couldn't add that — try again")
+      return
+    }
+
+    setItems((prev) => [data, ...prev])
+    notify.success(`${data.title} added to your portfolio`)
+    setCreatingNew(false)
   }
 
   const allTags = ['All', ...new Set(items.flatMap((it) => it.tags || []))]
@@ -71,17 +92,21 @@ const [newItem, setNewItem] = useState({ title: '', summary: '', impact: '', tag
   return (
     <div className="flex h-screen bg-parchment-50">
       <Sidebar activePage="portfolio" onNavigate={onNavigate} />
-      <div className="relative flex-1 min-w-0">
-  <ChatBackground image="/picture2.png" /> {/* or picture3/4 depending on page */}
+
       <main className="flex-1 min-w-0 overflow-y-auto px-8 py-7">
-        <header>
-          <h1 className="font-serif text-[24px] text-navy-900">Your Portfolio</h1>
-          <button onClick={() => setShowAddForm(true)} className="flex items-center gap-1.5 rounded-control bg-navy-900 px-4 py-2 text-[13px] text-parchment-50 hover:bg-navy-800">
-   New activity
-</button>
-          <p className="mt-1 text-[13.5px] text-ink-500">
-            Every achievement, project, and role Freshman AI has structured from your conversations and documents.
-          </p>
+        <header className="flex items-center justify-between">
+          <div>
+            <h1 className="font-serif text-[24px] text-navy-900">Your Portfolio</h1>
+            <p className="mt-1 text-[13.5px] text-ink-500">
+              Every achievement, project, and role Freshman AI has structured from your conversations and documents.
+            </p>
+          </div>
+          <button
+            onClick={() => setCreatingNew(true)}
+            className="flex items-center gap-1.5 rounded-control bg-navy-900 px-4 py-2 text-[13px] text-parchment-50 hover:bg-navy-800"
+          >
+            <Plus size={14} /> New activity
+          </button>
         </header>
 
         {!loading && items.length > 0 && (
@@ -108,8 +133,7 @@ const [newItem, setNewItem] = useState({ title: '', summary: '', impact: '', tag
           <Card className="mt-6 p-8 text-center shadow-panel">
             <p className="mt-3 font-serif text-[17px] text-navy-900">Nothing here yet</p>
             <p className="mt-2 text-[13.5px] text-ink-500 max-w-md mx-auto">
-              Tell Freshman AI about something you've built, led, or achieved in chat — or upload your
-              resume — and it'll show up here, structured and ready for your applications.
+              Tell Freshman AI about something you've built, led, or achieved in chat — or add one manually with the button above.
             </p>
           </Card>
         )}
@@ -165,13 +189,12 @@ const [newItem, setNewItem] = useState({ title: '', summary: '', impact: '', tag
       </main>
 
       {editingItem && (
-        <PortfolioEditOverlay
-          item={editingItem}
-          onSave={handleSaveEdit}
-          onClose={() => setEditingItem(null)}
-        />
+        <PortfolioEditOverlay item={editingItem} onSave={handleSaveEdit} onClose={() => setEditingItem(null)} />
       )}
-    </div>
+
+      {creatingNew && (
+        <PortfolioEditOverlay item={BLANK_ITEM} onSave={handleCreateNew} onClose={() => setCreatingNew(false)} />
+      )}
     </div>
   )
 }

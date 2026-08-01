@@ -16,10 +16,16 @@ export default function CalendarPage({ onNavigate, studentId }) {
 
   useEffect(() => {
     if (!studentId) return
-    getCalendarEvents(studentId).then((data) => {
-      setEvents(data)
-      setLoading(false)
-    })
+    getCalendarEvents(studentId)
+      .then((data) => {
+        setEvents(data || [])
+        setLoading(false)
+      })
+      .catch((err) => {
+        console.error('Failed to load calendar events:', err)
+        setEvents([])
+        setLoading(false)
+      })
   }, [studentId])
 
   const year = cursor.getFullYear()
@@ -40,7 +46,7 @@ export default function CalendarPage({ onNavigate, studentId }) {
         <header>
           <h1 className="font-serif text-[24px] text-navy-900">Calendar</h1>
           <p className="mt-1 text-[13.5px] text-ink-500">
-            University, opportunity, and task deadlines, all in one place.
+            University, opportunity, task, and reminder deadlines, all in one place.
           </p>
         </header>
 
@@ -63,7 +69,7 @@ export default function CalendarPage({ onNavigate, studentId }) {
               <div className="mt-4">
                 <MonthGrid year={year} month={month} events={events} onDayClick={(evts, date) => setSelectedDay({ evts, date })} />
               </div>
-              <div className="mt-4 flex gap-4 text-[11.5px] text-ink-500">
+              <div className="mt-4 flex flex-wrap gap-4 text-[11.5px] text-ink-500">
                 {Object.entries(TYPE_LABEL).map(([type, label]) => (
                   <span key={type} className="flex items-center gap-1.5">
                     <span className={`h-2 w-2 rounded-full ${TYPE_DOT[type]}`} /> {label}
@@ -82,7 +88,7 @@ export default function CalendarPage({ onNavigate, studentId }) {
                 )}
                 {(selectedDay ? selectedDay.evts : monthEvents).map((e) => (
                   <div key={e.id} className="flex items-start gap-2">
-                    <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${TYPE_DOT[e.type]}`} />
+                    <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${TYPE_DOT[e.type] || 'bg-ink-500'}`} />
                     <div>
                       <p className={`text-[12.5px] ${e.done ? 'text-ink-500 line-through' : 'text-ink-900'}`}>{e.title}</p>
                       {!selectedDay && (

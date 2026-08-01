@@ -7,6 +7,7 @@ import { useVoiceMode } from '../hooks/useVoiceMode.js'
 import VoiceOrb from '../components/chat/VoiceOrb.jsx'
 import ProfileInsightCard from '../components/chat/ProfileInsightCard.jsx'
 import ExtractionProgress from '../components/chat/ExtractionProgress.jsx'
+ import { isSmallTalk, mayContainAchievement } from '../lib/achievementSignal.js'
 import CastleBuildLoader from '../components/chat/CastleBuildLoader.jsx'
 import ThinkingStatus from '../components/chat/ThinkingStatus.jsx'
 import ChatInput from '../components/chat/ChatInput.jsx'
@@ -380,8 +381,12 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
       setItems((prev) => [...prev, { id: nextId(), kind: 'video', videoId: video.videoId, title: video.title }])
     }
 
-    const isSubstantive = text.trim().split(/\s+/).length >= 4
-    if (!isSubstantive) return // "hey", "thanks", "ok" — nothing worth a Groq extraction call for
+
+
+// add near the top imports
+
+// then in handleSend, replace the old isSubstantive gate with:
+if (isSmallTalk(text)) return // "hello", "thanks", "ok" — nothing to extract, don't even ask Groq
 
     if (ADD_TO_PORTFOLIO_INTENT.test(text)) {
       const recentUserMessages = [...items, userItem].filter((it) => it.kind === 'user').map((it) => it.content)
@@ -392,10 +397,24 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
       return // explicit add handled — skip the passive extraction pass below to save a Groq call
     }
 
-    const fullHistoryForExtraction = [...historyForModel, { role: 'assistant', content: full }]
-    const insight = await extractProfileUpdate(fullHistoryForExtraction)
+// only call the (expensive, hallucination-prone) extraction pass if the
+// message plausibly contains a real achievement to extract, OR contains
+// profile facts (major/school/stats) worth capturing — otherwise skip
+// the Groq call entirely rather than risking an invented card
+const worthExtracting = mayContainAchievement(text) || /\b(major|study|studying|target|apply|applying|grade|gpa|sat|act|country|city)\b/i.test(text)
 
-    const newActivity = insight.activities.find((a) => !recentAdditions.some((r) => r.title === a.title))
+if (!worthExtracting) return
+
+const fullHistoryForExtraction = [...historyForModel, { role: 'assistant', content: full }]
+const insight = await extractProfileUpdate(fullHistoryForExtraction)
+
+// dedupe against real saved data, not in-memory state that resets on navigation
+const { data: existingItems } = await supabase.from('portfolio_items').select('title').eq('student_id', studentId)
+const existingTitles = new Set((existingItems || []).map((i) => i.title.toLowerCase().trim()))
+
+const newActivity = mayContainAchievement(text)
+  ? insight.activities.find((a) => !existingTitles.has(a.title.toLowerCase().trim()))
+  : null
     if (newActivity) {
       pushInsightCard(newActivity, text)
       setRecentAdditions((prev) => [{ title: newActivity.title, when: 'Just now' }, ...prev].slice(0, 5))
