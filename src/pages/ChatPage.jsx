@@ -7,7 +7,7 @@ import { useVoiceMode } from '../hooks/useVoiceMode.js'
 import VoiceOrb from '../components/chat/VoiceOrb.jsx'
 import ProfileInsightCard from '../components/chat/ProfileInsightCard.jsx'
 import ExtractionProgress from '../components/chat/ExtractionProgress.jsx'
- import { isSmallTalk, mayContainAchievement } from '../lib/achievementSignal.js'
+import { isSmallTalk, mayContainAchievement } from '../lib/achievementSignal.js'
 import CastleBuildLoader from '../components/chat/CastleBuildLoader.jsx'
 import ThinkingStatus from '../components/chat/ThinkingStatus.jsx'
 import ChatInput from '../components/chat/ChatInput.jsx'
@@ -61,7 +61,7 @@ function nextId() {
 const ROADMAP_INTENT = /\b(build|make|create|generate|show)\b.*\broadmap\b|\broadmap\b.*\b(build|make|create|generate)\b/i
 const ADD_TO_PORTFOLIO_INTENT = /\b(add|put|save)\b.*\b(this|that|it)\b.*\bportfolio\b|\bportfolio\b.*\b(add|put|save)\b/i
 
-export default function ChatPage({ onNavigate, studentId, initialName }) {
+export default function ChatPage({ onNavigate, studentId, initialName, pendingPrefill, onPrefillHandled }) {
   const [items, setItems] = useState([])
   const [streamingText, setStreamingText] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
@@ -135,6 +135,15 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     }
     load()
   }, [studentId])
+
+  // fires a dashboard-originated prompt once, after chat history has loaded
+  useEffect(() => {
+    if (!pendingPrefill?.text) return
+    if (pendingPrefill.autoSend) {
+      handleSend(pendingPrefill.text)
+    }
+    onPrefillHandled?.()
+  }, [pendingPrefill]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -329,17 +338,14 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
     setItems((prev) => [...prev, userItem])
     saveMessage('user', text)
 
-    // removal requests short-circuit — no need to also call the AI
     const handledRemoval = (await maybeOfferPortfolioRemoval(text)) || (await maybeOfferTaskRemoval(text))
     if (handledRemoval) return
 
-    // reminder takes priority over task (a "submit X" reminder shouldn't also become a task)
     const reminderCreated = await maybeCreateReminder(text)
     if (!reminderCreated) {
       await maybeCreateTask(text)
     }
 
-    // pure regex/local checks — no Groq calls, safe to always run
     await maybeAnalyzeScore(text)
     await maybeShowUniversitySnapshot(text)
 
@@ -381,12 +387,7 @@ export default function ChatPage({ onNavigate, studentId, initialName }) {
       setItems((prev) => [...prev, { id: nextId(), kind: 'video', videoId: video.videoId, title: video.title }])
     }
 
-
-
-// add near the top imports
-
-// then in handleSend, replace the old isSubstantive gate with:
-if (isSmallTalk(text)) return // "hello", "thanks", "ok" — nothing to extract, don't even ask Groq
+    if (isSmallTalk(text)) return
 
     if (ADD_TO_PORTFOLIO_INTENT.test(text)) {
       const recentUserMessages = [...items, userItem].filter((it) => it.kind === 'user').map((it) => it.content)
@@ -394,27 +395,22 @@ if (isSmallTalk(text)) return // "hello", "thanks", "ok" — nothing to extract,
       if (explicit.found) {
         pushInsightCard({ title: explicit.title, tags: explicit.tags, summary: explicit.summary, impact: explicit.impact, skills: explicit.skills }, text)
       }
-      return // explicit add handled — skip the passive extraction pass below to save a Groq call
+      return
     }
 
-// only call the (expensive, hallucination-prone) extraction pass if the
-// message plausibly contains a real achievement to extract, OR contains
-// profile facts (major/school/stats) worth capturing — otherwise skip
-// the Groq call entirely rather than risking an invented card
-const worthExtracting = mayContainAchievement(text) || /\b(major|study|studying|target|apply|applying|grade|gpa|sat|act|country|city)\b/i.test(text)
+    const worthExtracting = mayContainAchievement(text) || /\b(major|study|studying|target|apply|applying|grade|gpa|sat|act|country|city)\b/i.test(text)
 
-if (!worthExtracting) return
+    if (!worthExtracting) return
 
-const fullHistoryForExtraction = [...historyForModel, { role: 'assistant', content: full }]
-const insight = await extractProfileUpdate(fullHistoryForExtraction)
+    const fullHistoryForExtraction = [...historyForModel, { role: 'assistant', content: full }]
+    const insight = await extractProfileUpdate(fullHistoryForExtraction)
 
-// dedupe against real saved data, not in-memory state that resets on navigation
-const { data: existingItems } = await supabase.from('portfolio_items').select('title').eq('student_id', studentId)
-const existingTitles = new Set((existingItems || []).map((i) => i.title.toLowerCase().trim()))
+    const { data: existingItems } = await supabase.from('portfolio_items').select('title').eq('student_id', studentId)
+    const existingTitles = new Set((existingItems || []).map((i) => i.title.toLowerCase().trim()))
 
-const newActivity = mayContainAchievement(text)
-  ? insight.activities.find((a) => !existingTitles.has(a.title.toLowerCase().trim()))
-  : null
+    const newActivity = mayContainAchievement(text)
+      ? insight.activities.find((a) => !existingTitles.has(a.title.toLowerCase().trim()))
+      : null
     if (newActivity) {
       pushInsightCard(newActivity, text)
       setRecentAdditions((prev) => [{ title: newActivity.title, when: 'Just now' }, ...prev].slice(0, 5))
@@ -428,8 +424,6 @@ const newActivity = mayContainAchievement(text)
     if (hasProfileUpdates) {
       const merged = await persistProfileMerge(insight, recentAdditions.length)
 
-      // only suggest an opportunity when there's a genuinely new signal to react to,
-      // not on every message where major/interests still happen to be present
       if (newActivity || insight.target_schools.length > 0) {
         await maybeSuggestOpportunity()
       }
@@ -645,7 +639,6 @@ const newActivity = mayContainAchievement(text)
                   )
                 }
 
-                // portfolio insight
                 return (
                   <AIMessage key={it.id} showAvatar={false}>
                     {it.status === 'idle' && (

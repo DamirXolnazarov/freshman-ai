@@ -12,17 +12,17 @@ export default function ProgressRing({ progress, tone, size = 72, glow = false, 
 
   return (
     <div
-      className="relative flex shrink-0 items-center justify-center rounded-full"
+      className="relative flex shrink-0 items-center justify-center rounded-full transition-[box-shadow]"
       style={{
         width: size,
         height: size,
-        background: `conic-gradient(${color} ${pct}%, rgba(255,255,255,0.12) ${pct}%)`,
-        boxShadow: glow && pct > 0 ? `0 0 18px 1px ${color}55` : 'none',
+        background: `conic-gradient(${color} ${pct * 3.6}deg, rgba(255,255,255,0.12) 0deg)`,
+        boxShadow: glow && pct > 0 ? `0 0 16px 0px ${color}4D` : 'none',
       }}
     >
       <div
         className="absolute flex items-center justify-center rounded-full"
-        style={{ width: size - 7, height: size - 7, background: glow ? '#0B1A33' : '#FAF5EA' }}
+        style={{ width: size - 8, height: size - 8, background: glow ? '#0B1A33' : '#FAF5EA' }}
       >
         {children}
       </div>

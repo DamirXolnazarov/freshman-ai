@@ -23,6 +23,7 @@ export default function App() {
   const [authUser, setAuthUser] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [roadmapAutoGenerate, setRoadmapAutoGenerate] = useState(false)
+  const [pendingChatPrefill, setPendingChatPrefill] = useState(null)
   const palette = useCommandPalette()
 
   useEffect(() => {
@@ -58,6 +59,9 @@ export default function App() {
     if (target === 'roadmap' && options?.autoGenerate) {
       setRoadmapAutoGenerate(true)
     }
+    if (target === 'chat' && options?.prefill) {
+      setPendingChatPrefill({ text: options.prefill, autoSend: !!options.autoSend })
+    }
     setPage(target)
   }
 
@@ -86,7 +90,15 @@ export default function App() {
         studentId={studentId}
       />
       {page === 'dashboard' && <DashboardPage onNavigate={handleNavigate} studentId={studentId} />}
-      {page === 'chat' && <ChatPage onNavigate={handleNavigate} studentId={studentId} initialName={initialName} />}
+      {page === 'chat' && (
+        <ChatPage
+          onNavigate={handleNavigate}
+          studentId={studentId}
+          initialName={initialName}
+          pendingPrefill={pendingChatPrefill}
+          onPrefillHandled={() => setPendingChatPrefill(null)}
+        />
+      )}
       {page === 'roadmap' && (
         <RoadmapPage
           onNavigate={handleNavigate}
@@ -101,8 +113,8 @@ export default function App() {
       {page === 'applications' && <ApplicationsPage onNavigate={handleNavigate} studentId={studentId} />}
       {page === 'opportunities' && <OpportunitiesPage onNavigate={handleNavigate} studentId={studentId} />}
       {page === 'tasks' && <TasksPage onNavigate={handleNavigate} studentId={studentId} />}
-{page === 'calendar' && <CalendarPage onNavigate={handleNavigate} studentId={studentId} />}
-{page === 'profile' && <ProfilePage onNavigate={handleNavigate} studentId={studentId} />}
+      {page === 'calendar' && <CalendarPage onNavigate={handleNavigate} studentId={studentId} />}
+      {page === 'profile' && <ProfilePage onNavigate={handleNavigate} studentId={studentId} />}
     </>
   )
 }
