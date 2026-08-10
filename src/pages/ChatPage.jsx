@@ -293,6 +293,10 @@ export default function ChatPage({ onNavigate, studentId, initialName, pendingPr
       getSavedUniversities(studentId),
     ])
 
+    const { data: programData } = savedUniversities?.length
+      ? await supabase.from('university_programs').select('*').in('university_id', savedUniversities.map((s) => s.university_id))
+      : { data: [] }
+
     const gaps = roadmapReadinessGaps(profile, portfolioItems?.length || 0)
     const firstName = studentInfo.name.split(' ')[0]
 
@@ -308,7 +312,7 @@ export default function ChatPage({ onNavigate, studentId, initialName, pendingPr
     setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: reply, time: timeNow() }])
     saveMessage('assistant', reply)
 
-    const detectedGaps = computeGaps(profile, portfolioItems || [], savedUniversities || [])
+    const detectedGaps = computeGaps(profile, portfolioItems || [], savedUniversities || [], programData || [])
     const { steps } = await generateRoadmap(profile, portfolioItems, detectedGaps)
 
     if (steps.length > 0) {

@@ -43,13 +43,14 @@ export default function DashboardPage({ onNavigate, studentId }) {
   const [oppApplications, setOppApplications] = useState([])
   const [essays, setEssays] = useState([])
   const [tasks, setTasks] = useState([])
+  const [programData, setProgramData] = useState([])
   const [askInput, setAskInput] = useState('')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (!studentId) return
     async function load() {
-      const [{ data: student }, { data: prof }, { data: portfolio }, savedUnis, opps, essayList, taskList] = await Promise.all([
+       const [{ data: student }, { data: prof }, { data: portfolio }, savedUnis, opps, essayList, taskList] = await Promise.all([
         supabase.from('students').select('name').eq('id', studentId).single(),
         supabase.from('student_profile').select('*').eq('student_id', studentId).maybeSingle(),
         supabase.from('portfolio_items').select('*').eq('student_id', studentId).order('created_at', { ascending: false }),
@@ -65,6 +66,15 @@ export default function DashboardPage({ onNavigate, studentId }) {
       setOppApplications(opps || [])
       setEssays(essayList || [])
       setTasks(taskList || [])
+
+      if (savedUnis?.length) {
+        const { data: programs } = await supabase
+          .from('university_programs')
+          .select('*')
+          .in('university_id', savedUnis.map((s) => s.university_id))
+        setProgramData(programs || [])
+      }
+
       setLoading(false)
     }
     load()
@@ -106,7 +116,7 @@ async function handleToggleTask(id, currentStatus) {
     { key: 'decision', icon: Flag, label: 'Decision', detail: "Where you'll go", progress: decisionProgress, tone: 'muted', onClick: () => onNavigate?.('applications') },
   ]
 
-  const gaps = computeGaps(profile, portfolioItems, savedUniversities)
+  const gaps = computeGaps(profile, portfolioItems, savedUniversities, programData)
   const primaryGap = topGap(gaps)
 
   const tagCounts = {}

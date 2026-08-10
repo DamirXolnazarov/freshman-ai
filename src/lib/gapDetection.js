@@ -18,10 +18,23 @@ function isStemMajor(major) {
   return STEM_KEYWORDS.some((k) => lower.includes(k))
 }
 
-export function computeGaps(profile, portfolioItems = [], savedUniversities = []) {
+export function computeGaps(profile, portfolioItems = [], savedUniversities = [], programData = []) {
   const gaps = []
   const studentSat = profile?.sat_score ? parseInt(profile.sat_score, 10) : null
   const studentAct = profile?.act_score ? parseInt(profile.act_score, 10) : null
+
+  async function checkProgramGap(supabase, uni, major) {
+  if (!major) return null
+  const { data } = await supabase
+    .from('university_programs')
+    .select('*')
+    .eq('university_id', uni.id)
+    .ilike('major', `%${major}%`)
+    .maybeSingle()
+  return data || null
+}
+
+
 
   // --- Score gaps, per target school ---
   savedUniversities.forEach((s) => {
@@ -71,7 +84,28 @@ export function computeGaps(profile, portfolioItems = [], savedUniversities = []
     }
   }
 
+  // --- Program-specific admit rate, when we actually have verified data ---
+  if (profile?.major) {
+    savedUniversities.forEach((s) => {
+      const uni = s.universities
+      if (!uni) return
+      const program = programData.find(
+        (p) => p.university_id === uni.id && p.major.toLowerCase().includes(profile.major.toLowerCase())
+      )
+      if (program?.admit_rate != null) {
+        gaps.push({
+          key: `program-rate-${uni.id}`,
+          severity: program.admit_rate < 10 ? 'high' : program.admit_rate < 20 ? 'medium' : 'low',
+          title: `${profile.major} at ${uni.name} admits at ${program.admit_rate}%`,
+          description: `This program is more selective than ${uni.name}'s overall admit rate — worth treating it as a reach unless your activities and stats are well above their general range.`,
+          type: 'program',
+        })
+      }
+    })
+  }
+
   // --- Thin portfolio overall ---
+  
   if (portfolioItems.length < 3 && (profile?.target_schools?.length || 0) > 0) {
     gaps.push({
       key: 'thin-portfolio',
