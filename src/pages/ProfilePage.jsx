@@ -5,6 +5,7 @@ import Card from '../components/ui/Card.jsx'
 import Button from '../components/ui/Button.jsx'
 import TagListEditor from '../components/profile/TagListEditor.jsx'
 import { notify } from '../lib/toast.js'
+import DangerZoneCard from '../components/profile/DangerZoneCard.jsx'
 import { supabase } from '../lib/supabase.js'
 import { enrollmentYearFromGrade } from '../lib/groq.js'
 
@@ -322,7 +323,11 @@ export default function ProfilePage({ onNavigate, studentId }) {
             </Button>
           </div>
         </Card>
+        <br />
+        <DangerZoneCard studentName={studentName} />
       </main>
+
+
     </div>
   )
 }

@@ -7,8 +7,9 @@ import { useVoiceMode } from '../hooks/useVoiceMode.js'
 import VoiceOrb from '../components/chat/VoiceOrb.jsx'
 import ProfileInsightCard from '../components/chat/ProfileInsightCard.jsx'
 import ExtractionProgress from '../components/chat/ExtractionProgress.jsx'
-import { isSmallTalk, mayContainAchievement } from '../lib/achievementSignal.js'
+import { isSmallTalk, mayContainAchievement, isAffirmAdd } from '../lib/achievementSignal.js'
 import CastleBuildLoader from '../components/chat/CastleBuildLoader.jsx'
+import { trimHistory } from '../lib/trimHistory.js'
 import ThinkingStatus from '../components/chat/ThinkingStatus.jsx'
 import ChatInput from '../components/chat/ChatInput.jsx'
 import TaskCreatedCard from '../components/chat/cards/TaskCreatedCard.jsx'
@@ -334,6 +335,21 @@ export default function ChatPage({ onNavigate, studentId, initialName, pendingPr
       return
     }
 
+    // If the last unresolved thing in the thread is a pending portfolio
+    // suggestion, treat a short "add it" / "yes" as confirming THAT card
+    // instead of sending a fresh message to Groq (which has no memory
+    // of "it" and will just hallucinate a conversational confirmation).
+    if (isAffirmAdd(text)) {
+      const pending = [...items].reverse().find((it) => it.kind === 'insight' && it.status === 'idle')
+      if (pending) {
+        const confirmedItem = { id: nextId(), kind: 'user', content: text, time: timeNow() }
+        setItems((prev) => [...prev, confirmedItem])
+        saveMessage('user', text)
+        await handleAddInsight(pending.id)
+        return
+      }
+    }
+
     const userItem = { id: nextId(), kind: 'user', content: text, time: timeNow() }
     setItems((prev) => [...prev, userItem])
     saveMessage('user', text)
@@ -352,9 +368,11 @@ export default function ChatPage({ onNavigate, studentId, initialName, pendingPr
     setIsStreaming(true)
     setStreamingText('')
 
-    const historyForModel = [...items, userItem]
-      .filter((it) => it.kind === 'user' || it.kind === 'assistant')
-      .map((it) => ({ role: it.kind === 'user' ? 'user' : 'assistant', content: it.content }))
+    const historyForModel = trimHistory(
+      [...items, userItem]
+        .filter((it) => it.kind === 'user' || it.kind === 'assistant')
+        .map((it) => ({ role: it.kind === 'user' ? 'user' : 'assistant', content: it.content }))
+    )
 
     let full = ''
     let failed = false
@@ -402,7 +420,7 @@ export default function ChatPage({ onNavigate, studentId, initialName, pendingPr
 
     if (!worthExtracting) return
 
-    const fullHistoryForExtraction = [...historyForModel, { role: 'assistant', content: full }]
+    const fullHistoryForExtraction = trimHistory([...historyForModel, { role: 'assistant', content: full }])
     const insight = await extractProfileUpdate(fullHistoryForExtraction)
 
     const { data: existingItems } = await supabase.from('portfolio_items').select('title').eq('student_id', studentId)
@@ -413,7 +431,6 @@ export default function ChatPage({ onNavigate, studentId, initialName, pendingPr
       : null
     if (newActivity) {
       pushInsightCard(newActivity, text)
-      setRecentAdditions((prev) => [{ title: newActivity.title, when: 'Just now' }, ...prev].slice(0, 5))
     }
 
     const hasProfileUpdates =
@@ -452,8 +469,15 @@ export default function ChatPage({ onNavigate, studentId, initialName, pendingPr
     })
 
     setTimeout(() => {
+      if (error) {
+        console.error('Failed to add portfolio item:', error.message, error)
+        updateItem(itemId, { status: 'idle' })
+        notify.error("Couldn't save that — try again?")
+        return
+      }
       updateItem(itemId, { status: 'added' })
-      if (!error) notify.success(`${title} added to your portfolio`)
+      notify.success(`${title} added to your portfolio`)
+      setRecentAdditions((prev) => [{ title, when: 'Just now' }, ...prev].slice(0, 5))
     }, 1400)
   }
 

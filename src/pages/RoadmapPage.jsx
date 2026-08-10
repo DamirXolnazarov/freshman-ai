@@ -105,12 +105,12 @@ export default function RoadmapPage({ onNavigate, studentId, autoGenerate, onAut
   const showPlayground = animating || steps.length === 0
 
   return (
-    <div className="flex h-screen bg-parchment-50">
+     <div className="flex h-screen bg-parchment-50">
       <Sidebar activePage="roadmap" onNavigate={onNavigate} />
-      <div className="relative flex-1 min-w-0">
-  <ChatBackground image="/picture2.png" /> {/* or picture3/4 depending on page */}
+      <div className="relative flex h-full flex-1 flex-col min-w-0">
+        <ChatBackground image="/picture2.png" />
 
-      <main className="flex-1 min-w-0 overflow-y-auto px-8 py-7">
+        <main className="relative z-10 flex-1 min-w-0 overflow-y-auto px-8 py-7">
         <header>
           <h1 className="font-serif text-[24px] text-navy-900">Your Roadmap</h1>
           <p className="mt-1 text-[13.5px] text-ink-500">

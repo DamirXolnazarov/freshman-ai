@@ -70,10 +70,10 @@ export default function UniversitiesPage({ onNavigate, studentId }) {
   return (
     <div className="flex h-screen bg-parchment-50">
       <Sidebar activePage="universities" onNavigate={onNavigate} />
-      <div className="relative flex-1 min-w-0">
-  <ChatBackground image="/picture2.png" /> {/* or picture3/4 depending on page */}
+      <div className="relative flex h-full flex-1 flex-col min-w-0">
+        <ChatBackground image="/picture2.png" />
 
-      <main className="flex-1 min-w-0 overflow-y-auto px-8 py-7">
+        <main className="relative z-10 flex-1 min-w-0 overflow-y-auto px-8 py-7">
         <header>
           <h1 className="font-serif text-[24px] text-navy-900">Universities</h1>
           <p className="mt-1 text-[13.5px] text-ink-500">

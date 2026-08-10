@@ -3,6 +3,41 @@ const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
 const MODEL = 'llama-3.1-8b-instant'
 const CURRENT_YEAR = new Date().getFullYear()
 
+// Shared, retrying wrapper for every Groq call in this file. Respects
+// Retry-After on 429s when Groq sends one, otherwise backs off hard.
+// This is the fix: previously only the streaming chat call retried on
+// failure — every other Groq call (extraction, roadmap, polish, removal
+// intent) just did `if (!res.ok) return empty` with zero retry, so a
+// single 429 mid-conversation silently dropped portfolio/profile updates
+// with no visible error at all.
+async function groqFetch(body, { retries = 3 } = {}) {
+  let lastErr
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const res = await fetch(GROQ_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
+      body: JSON.stringify(body),
+    })
+
+    if (res.ok) return res
+
+    if (res.status === 429 && attempt < retries) {
+      const retryAfterHeader = res.headers.get('retry-after')
+      const waitMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : 1500 * 2 ** attempt
+      await new Promise((r) => setTimeout(r, waitMs))
+      continue
+    }
+
+    lastErr = new Error(`Groq request failed: ${res.status}`)
+    if (attempt < retries) {
+      await new Promise((r) => setTimeout(r, 800 * 2 ** attempt))
+      continue
+    }
+    return res // exhausted retries — return the failed response, let caller's !res.ok path handle it
+  }
+  throw lastErr
+}
+
 function buildSystemPrompt(studentName) {
   const nameLine = studentName
     ? `The student's name is ${studentName}. Use their first name naturally sometimes — when you greet
@@ -27,33 +62,62 @@ STRICT RULES:
 - Never invent facts the student hasn't stated. If you can reasonably infer something (e.g. they're in
   11th grade, so they're likely applying on a normal timeline), say it back to confirm in one short
   line rather than assuming silently.
-- If a student asks you to add something to their portfolio, don't say "I'll add it" — that's handled
-  automatically. Just acknowledge naturally, e.g. "Nice — that's going straight into your portfolio."
+- You have NO knowledge of whether anything has actually been added to the student's portfolio yet —
+  that happens in a separate step you don't control, after your reply. NEVER say "it's added," "it's
+  already there," "your portfolio is updated," or anything claiming a completed action. You genuinely
+  don't know if it happened.
+- NEVER format a reply as a structured entry — no bolded titles like "Internship: X at Y", no
+  markdown headers, no summary-paragraph-under-a-title layout. That format is reserved for the actual
+  portfolio card the UI shows separately. If your reply looks like a portfolio entry, it's wrong —
+  rewrite it as one plain conversational sentence instead.
+- If a student mentions something worth adding to their portfolio, just react to it like a person would
+  — one short line of genuine reaction to what they told you, nothing about "adding" or "portfolio" at
+  all. The system handles surfacing the actual add-to-portfolio card on its own; you don't need to
+  reference that process.
 
 Example of the right length and tone: "Got it — 9th grade, so you've got time. Best move right now
 isn't SAT prep, it's finding one thing you actually care about and going deep on it. What are you into?"
 
-Example of what NOT to do: any reply with numbered steps, multiple paragraphs, or a year-by-year plan.`
+Example of the right reaction to an achievement: "Data analyst at the World Bank — that's a genuinely
+strong line for your resume. What kind of analysis were you doing there?"
+
+Example of what NOT to do: any reply with numbered steps, multiple paragraphs, a bolded title-then-
+summary layout, or any claim that something was added/saved/updated.`
 }
 
 // Streams tokens via onToken(chunk). Resolves with the full text when done.
+// NOTE: streaming responses can't go through groqFetch (which buffers the
+// whole body before returning) — this keeps its own retry loop so a 429
+// here also backs off instead of failing on the first attempt.
 export async function chatWithAdvisorStream(history, onToken, studentName = null) {
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${GROQ_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [{ role: 'system', content: buildSystemPrompt(studentName) }, ...history],
-      temperature: 0.6,
-      max_tokens: 180,
-      stream: true,
-    }),
-  })
+  const maxAttempts = 3
+  let res
 
-  if (!res.ok || !res.body) {
+  for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+    res = await fetch(GROQ_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [{ role: 'system', content: buildSystemPrompt(studentName) }, ...history],
+        temperature: 0.6,
+        max_tokens: 180,
+        stream: true,
+      }),
+    })
+
+    if (res.ok && res.body) break
+
+    if (res.status === 429 && attempt < maxAttempts) {
+      const retryAfterHeader = res.headers.get('retry-after')
+      const waitMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : 1500 * 2 ** attempt
+      await new Promise((r) => setTimeout(r, waitMs))
+      continue
+    }
+
     const errText = await res.text().catch(() => '')
     throw new Error(`Groq chat failed: ${res.status} ${errText}`)
   }
@@ -144,18 +208,14 @@ export async function extractProfileUpdate(conversationHistory) {
 
   if (!studentOnly.trim()) return empty
 
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: EXTRACTION_SYSTEM_PROMPT },
-        { role: 'user', content: studentOnly },
-      ],
-      temperature: 0.1,
-      max_tokens: 600,
-    }),
+  const res = await groqFetch({
+    model: MODEL,
+    messages: [
+      { role: 'system', content: EXTRACTION_SYSTEM_PROMPT },
+      { role: 'user', content: studentOnly },
+    ],
+    temperature: 0.1,
+    max_tokens: 600,
   })
 
   if (!res.ok) return empty
@@ -195,18 +255,14 @@ export async function extractExplicitPortfolioRequest(recentUserMessages) {
   const context = recentUserMessages.slice(-6).map((m) => `- ${m}`).join('\n')
   if (!context.trim()) return empty
 
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: EXPLICIT_ADD_PROMPT },
-        { role: 'user', content: context },
-      ],
-      temperature: 0.2,
-      max_tokens: 300,
-    }),
+  const res = await groqFetch({
+    model: MODEL,
+    messages: [
+      { role: 'system', content: EXPLICIT_ADD_PROMPT },
+      { role: 'user', content: context },
+    ],
+    temperature: 0.2,
+    max_tokens: 300,
   })
 
   if (!res.ok) return empty
@@ -260,18 +316,14 @@ export async function extractProfileFromDocument(documentText) {
 
   const trimmed = documentText.slice(0, 12000)
 
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: DOCUMENT_EXTRACTION_PROMPT },
-        { role: 'user', content: trimmed },
-      ],
-      temperature: 0.1,
-      max_tokens: 1200,
-    }),
+  const res = await groqFetch({
+    model: MODEL,
+    messages: [
+      { role: 'system', content: DOCUMENT_EXTRACTION_PROMPT },
+      { role: 'user', content: trimmed },
+    ],
+    temperature: 0.1,
+    max_tokens: 1200,
   })
 
   if (!res.ok) return empty
@@ -344,18 +396,14 @@ export async function generateRoadmap(profile, portfolioItems, gaps = []) {
     detected_gaps: gaps.map((g) => ({ title: g.title, description: g.description, severity: g.severity })),
   }
 
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: ROADMAP_SYSTEM_PROMPT },
-        { role: 'user', content: JSON.stringify(payload) },
-      ],
-      temperature: 0.4,
-      max_tokens: 2000,
-    }),
+  const res = await groqFetch({
+    model: MODEL,
+    messages: [
+      { role: 'system', content: ROADMAP_SYSTEM_PROMPT },
+      { role: 'user', content: JSON.stringify(payload) },
+    ],
+    temperature: 0.4,
+    max_tokens: 2000,
   })
 
   if (!res.ok) return { steps: [] }
@@ -382,18 +430,14 @@ Respond with ONLY the improved essay text, no preamble, no markdown, no quotatio
 export async function polishEssay(content) {
   if (!content.trim()) return content
 
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: ESSAY_POLISH_PROMPT },
-        { role: 'user', content },
-      ],
-      temperature: 0.5,
-      max_tokens: 1500,
-    }),
+  const res = await groqFetch({
+    model: MODEL,
+    messages: [
+      { role: 'system', content: ESSAY_POLISH_PROMPT },
+      { role: 'user', content },
+    ],
+    temperature: 0.5,
+    max_tokens: 1500,
   })
 
   if (!res.ok) return content
@@ -412,18 +456,14 @@ Respond with ONLY raw JSON, no markdown fences, no preamble. Schema:
 { "title": string, "summary": string, "impact": string }`
 
 export async function polishPortfolioItem(draft) {
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: POLISH_SYSTEM_PROMPT },
-        { role: 'user', content: JSON.stringify({ title: draft.title, summary: draft.summary, impact: draft.impact }) },
-      ],
-      temperature: 0.5,
-      max_tokens: 300,
-    }),
+  const res = await groqFetch({
+    model: MODEL,
+    messages: [
+      { role: 'system', content: POLISH_SYSTEM_PROMPT },
+      { role: 'user', content: JSON.stringify({ title: draft.title, summary: draft.summary, impact: draft.impact }) },
+    ],
+    temperature: 0.5,
+    max_tokens: 300,
   })
 
   if (!res.ok) return null
@@ -454,18 +494,14 @@ export async function extractRemovalIntent(text, existingTitles) {
   const empty = { found: false }
   if (!existingTitles.length) return empty
 
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: REMOVE_INTENT_PROMPT },
-        { role: 'user', content: `Message: "${text}"\n\nExisting portfolio titles:\n${existingTitles.map(t => `- ${t}`).join('\n')}` },
-      ],
-      temperature: 0.1,
-      max_tokens: 150,
-    }),
+  const res = await groqFetch({
+    model: MODEL,
+    messages: [
+      { role: 'system', content: REMOVE_INTENT_PROMPT },
+      { role: 'user', content: `Message: "${text}"\n\nExisting portfolio titles:\n${existingTitles.map(t => `- ${t}`).join('\n')}` },
+    ],
+    temperature: 0.1,
+    max_tokens: 150,
   })
 
   if (!res.ok) return empty
