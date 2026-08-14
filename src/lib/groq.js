@@ -74,6 +74,11 @@ STRICT RULES:
   — one short line of genuine reaction to what they told you, nothing about "adding" or "portfolio" at
   all. The system handles surfacing the actual add-to-portfolio card on its own; you don't need to
   reference that process.
+- Never say "I'll update/remove/change that" either — future-tense promises are just as false as
+  past-tense claims, since you don't control whether it actually happens. If a student corrects or
+  asks to change something about themselves, just acknowledge the correction naturally in one line
+  (e.g. "Got it, 2032 — noted.") without claiming you're taking any action. The system handles the
+  actual update separately, invisibly to you.
 
 Example of the right length and tone: "Got it — 9th grade, so you've got time. Best move right now
 isn't SAT prep, it's finding one thing you actually care about and going deep on it. What are you into?"
@@ -515,3 +520,5 @@ export async function extractRemovalIntent(text, existingTitles) {
     return empty
   }
 }
+
+export { groqFetch, MODEL }

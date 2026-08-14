@@ -9,6 +9,12 @@ import ProfileInsightCard from '../components/chat/ProfileInsightCard.jsx'
 import ExtractionProgress from '../components/chat/ExtractionProgress.jsx'
 import { isSmallTalk, mayContainAchievement, isAffirmAdd } from '../lib/achievementSignal.js'
 import CastleBuildLoader from '../components/chat/CastleBuildLoader.jsx'
+import { detectProfileCorrection, extractProfileCorrection, applyProfileCorrection } from '../lib/profileControl.js'
+import {
+  detectRemoveOpportunityIntent, detectSaveOpportunityIntent,
+  findMatchingSavedOpportunity, findMatchingOpportunity,
+  removeSavedOpportunity, addOpportunity,
+} from '../lib/opportunityControl.js'
 import { trimHistory } from '../lib/trimHistory.js'
 import ThinkingStatus from '../components/chat/ThinkingStatus.jsx'
 import ChatInput from '../components/chat/ChatInput.jsx'
@@ -221,6 +227,47 @@ export default function ChatPage({ onNavigate, studentId, initialName, pendingPr
     setItems((prev) => [...prev, { id: nextId(), kind: 'score_analysis', analysis }])
   }
 
+  async function maybeApplyProfileCorrection(text) {
+  if (!detectProfileCorrection(text)) return false
+  const correction = await extractProfileCorrection(text)
+  if (!correction.found) return false
+
+  await applyProfileCorrection(studentId, correction.field, correction.value)
+
+  const classOf = correction.field === 'enrollment_year' ? correction.value + 4 : null
+  if (classOf) {
+    setStudentInfo((prev) => ({ ...prev, cohort: `Class of ${classOf}` }))
+  }
+
+  setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: `Updated — ${correction.field.replace('_', ' ')} is now ${correction.value}.`, time: timeNow() }])
+  notify.success('Profile updated')
+  return true
+}
+
+async function maybeOfferOpportunityRemoval(text) {
+  if (!detectRemoveOpportunityIntent(text)) return false
+  const match = await findMatchingSavedOpportunity(studentId, text)
+  if (!match) {
+    setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: "I couldn't find anything close to that in your saved opportunities.", time: timeNow() }])
+    return true
+  }
+  setItems((prev) => [...prev, { id: nextId(), kind: 'confirm_removal', target: 'opportunity', itemId: match.savedId, itemName: match.name, confidence: match.confidence }])
+  return true
+}
+
+async function maybeSaveOpportunityFromChat(text) {
+  if (!detectSaveOpportunityIntent(text)) return false
+  const match = await findMatchingOpportunity(text)
+  if (!match) {
+    setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: "I couldn't find that opportunity — check the Opportunities page for the exact name?", time: timeNow() }])
+    return true
+  }
+  await addOpportunity(studentId, match.id)
+  notify.success(`${match.name} saved`)
+  setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: `Saved "${match.name}" to your opportunities.`, time: timeNow() }])
+  return true
+}
+
   async function maybeShowUniversitySnapshot(text) {
     const savedUniversities = await getSavedUniversities(studentId)
     const mentioned = savedUniversities.find((s) => s.universities?.name && text.toLowerCase().includes(s.universities.name.toLowerCase()))
@@ -252,15 +299,18 @@ export default function ChatPage({ onNavigate, studentId, initialName, pendingPr
   }
 
   async function handleConfirmRemoval(item) {
-    if (item.target === 'portfolio') {
-      await deletePortfolioItem(item.itemId)
-      notify.success(`${item.itemName} removed from your portfolio`)
-    } else {
-      await deleteTaskById(item.itemId)
-      notify.success(`${item.itemName} removed from your tasks`)
-    }
-    updateItem(item.id, { resolved: true })
+  if (item.target === 'portfolio') {
+    await deletePortfolioItem(item.itemId)
+    notify.success(`${item.itemName} removed from your portfolio`)
+  } else if (item.target === 'task') {
+    await deleteTaskById(item.itemId)
+    notify.success(`${item.itemName} removed from your tasks`)
+  } else if (item.target === 'opportunity') {
+    await removeSavedOpportunity(item.itemId)
+    notify.success(`${item.itemName} removed from your opportunities`)
   }
+  updateItem(item.id, { resolved: true })
+}
 
   async function maybeSuggestOpportunity() {
     const [all, savedOpps] = await Promise.all([
@@ -358,9 +408,13 @@ export default function ChatPage({ onNavigate, studentId, initialName, pendingPr
     setItems((prev) => [...prev, userItem])
     saveMessage('user', text)
 
-    const handledRemoval = (await maybeOfferPortfolioRemoval(text)) || (await maybeOfferTaskRemoval(text))
-    if (handledRemoval) return
-
+    const handledRemoval =
+  (await maybeOfferPortfolioRemoval(text)) ||
+  (await maybeOfferTaskRemoval(text)) ||
+  (await maybeOfferOpportunityRemoval(text)) ||
+  (await maybeSaveOpportunityFromChat(text)) ||
+  (await maybeApplyProfileCorrection(text))
+if (handledRemoval) return
     const reminderCreated = await maybeCreateReminder(text)
     if (!reminderCreated) {
       await maybeCreateTask(text)
@@ -643,7 +697,11 @@ export default function ChatPage({ onNavigate, studentId, initialName, pendingPr
                         <p className="text-[13px] italic text-ink-500">Removed.</p>
                       ) : (
                         <ConfirmRemovalCard
-                          label={it.target === 'portfolio' ? 'from your portfolio' : 'from your tasks'}
+                          label={
+  it.target === 'portfolio' ? 'from your portfolio' :
+  it.target === 'task' ? 'from your tasks' :
+  'from your saved opportunities'
+}
                           itemName={it.itemName}
                           confidence={it.confidence}
                           onConfirm={() => handleConfirmRemoval(it)}
