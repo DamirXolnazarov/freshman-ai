@@ -5,7 +5,7 @@ const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'frid
 
 export function parseTaskIntent(text) {
   const lower = text.toLowerCase()
-  const taskVerbs = /\b(need to|have to|must|finish|complete|submit|due|deadline)\b/
+  const taskVerbs = /\b(need to|have to|must|finish|complete|submit|due|deadline|remind me to|create a task|add a task)\b/
   if (!taskVerbs.test(lower)) return null
 
   const now = new Date()
@@ -30,11 +30,15 @@ export function parseTaskIntent(text) {
 
   if (!dueDate) return null
 
-  // crude title extraction: strip filler words, keep the rest
+  // Strip trigger phrases, date phrases (including the leading "by"/"on"
+  // that precedes them), and leading filler verbs — in that order, so
+  // nothing dangling gets left behind in the stored title.
   const title = text
-    .replace(/\b(i need to|i have to|i must|today|tomorrow|next week|next monday|next tuesday|next wednesday|next thursday|next friday|next saturday|next sunday)\b/gi, '')
+    .replace(/\b(remind me to|create a task:?|add a task:?|i need to|i have to|i must)\b/gi, '')
+    .replace(/\b(by|on)\s+(today|tomorrow|next week|next\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/gi, '')
+    .replace(/\b(today|tomorrow|next week|next\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday))\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
     .trim()
-    .replace(/^(finish|complete|submit)\s+/i, (m) => m)
     .slice(0, 80)
 
   return { title: title.charAt(0).toUpperCase() + title.slice(1) || 'New task', dueDate: dueDate.toISOString().slice(0, 10) }

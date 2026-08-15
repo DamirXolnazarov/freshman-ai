@@ -6,14 +6,16 @@ import ChatContextSidebar from '../components/chat/ChatContextSidebar.jsx'
 import { useVoiceMode } from '../hooks/useVoiceMode.js'
 import VoiceOrb from '../components/chat/VoiceOrb.jsx'
 import ProfileInsightCard from '../components/chat/ProfileInsightCard.jsx'
+import { detectRemoveTaskIntent, findMatchingTask, deleteTaskById, detectCompleteTaskIntent, detectUncompleteTaskIntent, findMatchingTaskByStatus } from '../lib/taskControl.js'
+import { createTask, toggleTaskStatus } from '../lib/tasks.js'
 import ExtractionProgress from '../components/chat/ExtractionProgress.jsx'
 import { isSmallTalk, mayContainAchievement, isAffirmAdd } from '../lib/achievementSignal.js'
 import CastleBuildLoader from '../components/chat/CastleBuildLoader.jsx'
 import { detectProfileCorrection, extractProfileCorrection, applyProfileCorrection } from '../lib/profileControl.js'
 import {
-  detectRemoveOpportunityIntent, detectSaveOpportunityIntent,
+  detectRemoveOpportunityIntent, detectSaveOpportunityIntent, detectViewOpportunitiesIntent,
   findMatchingSavedOpportunity, findMatchingOpportunity,
-  removeSavedOpportunity, addOpportunity,
+  removeSavedOpportunity, addOpportunity, getOpportunitiesSummary,
 } from '../lib/opportunityControl.js'
 import { trimHistory } from '../lib/trimHistory.js'
 import ThinkingStatus from '../components/chat/ThinkingStatus.jsx'
@@ -43,13 +45,11 @@ import { computeCompleteness, roadmapReadinessGaps } from '../lib/profileComplet
 import { computeGaps } from '../lib/gapDetection.js'
 import { getSavedUniversities } from '../lib/universities.js'
 import { getOpportunities, getOpportunityApplications, saveOpportunity, scoreMatch } from '../lib/opportunities.js'
-import { createTask } from '../lib/tasks.js'
 import { parseTaskIntent } from '../lib/taskIntent.js'
 import { parseReminderIntent } from '../lib/reminderIntent.js'
 import { createReminder } from '../lib/reminders.js'
 import { findRelevantVideo } from '../lib/freshmanVideos.js'
 import { detectRemoveIntent, findMatchingPortfolioItem, deletePortfolioItem } from '../lib/portfolioControl.js'
-import { detectRemoveTaskIntent, findMatchingTask, deleteTaskById } from '../lib/taskControl.js'
 import { detectScoreMention, analyzeScore } from '../lib/scoreAnalysis.js'
 import { withRetry } from '../lib/withRetry.js'
 import { canCallNow, msUntilNextCall } from '../lib/rateLimiter.js'
@@ -75,6 +75,7 @@ export default function ChatPage({ onNavigate, studentId, initialName, pendingPr
   const [voiceModeOpen, setVoiceModeOpen] = useState(false)
   const [isParsingResume, setIsParsingResume] = useState(false)
   const [memoryFacts, setMemoryFacts] = useState([])
+  const [lastTaskTouched, setLastTaskTouched] = useState(null) // { id, title, status }
   const [recentAdditions, setRecentAdditions] = useState([])
   const [hasOfferedRoadmap, setHasOfferedRoadmap] = useState(false)
   const [studentInfo, setStudentInfo] = useState({
@@ -227,19 +228,43 @@ export default function ChatPage({ onNavigate, studentId, initialName, pendingPr
     setItems((prev) => [...prev, { id: nextId(), kind: 'score_analysis', analysis }])
   }
 
-  async function maybeApplyProfileCorrection(text) {
+async function maybeApplyProfileCorrection(text) {
   if (!detectProfileCorrection(text)) return false
   const correction = await extractProfileCorrection(text)
   if (!correction.found) return false
 
-  await applyProfileCorrection(studentId, correction.field, correction.value)
-
-  const classOf = correction.field === 'enrollment_year' ? correction.value + 4 : null
-  if (classOf) {
-    setStudentInfo((prev) => ({ ...prev, cohort: `Class of ${classOf}` }))
+  try {
+    await applyProfileCorrection(studentId, correction)
+  } catch (err) {
+    console.error('Profile correction failed:', err.message, err)
+    setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: "I tried to update that but something went wrong on my end — mind trying again?", time: timeNow() }])
+    return true
   }
 
-  setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: `Updated — ${correction.field.replace('_', ' ')} is now ${correction.value}.`, time: timeNow() }])
+  const { data: freshProfile } = await supabase
+    .from('student_profile')
+    .select('*')
+    .eq('student_id', studentId)
+    .maybeSingle()
+
+  const { count: activitiesCount } = await supabase
+    .from('portfolio_items')
+    .select('*', { count: 'exact', head: true })
+    .eq('student_id', studentId)
+
+  const classOf = freshProfile?.enrollment_year ? freshProfile.enrollment_year + 4 : null
+
+  setStudentInfo((prev) => ({
+    ...prev,
+    cohort: classOf ? `Class of ${classOf}` : prev.cohort,
+    completeness: computeCompleteness(freshProfile, activitiesCount || 0),
+  }))
+
+  const confirmText = correction.fieldType === 'list'
+    ? `${correction.action === 'remove' ? 'Removed' : 'Added'} "${correction.value}" ${correction.action === 'remove' ? 'from' : 'to'} your ${correction.field.replace('_', ' ')}.`
+    : `Updated — ${correction.field.replace('_', ' ')} is now ${correction.value}.`
+
+  setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: confirmText, time: timeNow() }])
   notify.success('Profile updated')
   return true
 }
@@ -265,6 +290,23 @@ async function maybeSaveOpportunityFromChat(text) {
   await addOpportunity(studentId, match.id)
   notify.success(`${match.name} saved`)
   setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: `Saved "${match.name}" to your opportunities.`, time: timeNow() }])
+  return true
+}
+
+async function maybeAnswerOpportunitiesQuery(text) {
+  if (!detectViewOpportunitiesIntent(text)) return false
+
+  const saved = await getOpportunitiesSummary(studentId)
+  if (!saved.length) {
+    setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: "You don't have any opportunities saved yet — want me to look for a good match based on your profile?", time: timeNow() }])
+    return true
+  }
+
+  const list = saved
+    .map((s) => `- ${s.opportunity?.name}${s.daysUntil != null ? ` (${s.daysUntil} days left)` : ''} — ${s.progress}% done`)
+    .join('\n')
+
+  setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: `Here's what you've got saved:\n\n${list}`, time: timeNow() }])
   return true
 }
 
@@ -297,6 +339,48 @@ async function maybeSaveOpportunityFromChat(text) {
     setItems((prev) => [...prev, { id: nextId(), kind: 'confirm_removal', target: 'task', itemId: match.id, itemName: match.title, confidence: match.confidence }])
     return true
   }
+
+async function maybeToggleTaskCompletion(text) {
+  const wantsComplete = detectCompleteTaskIntent(text)
+  const wantsReopen = detectUncompleteTaskIntent(text)
+  if (!wantsComplete && !wantsReopen) return false
+
+  const targetStatus = wantsComplete ? 'todo' : 'done'
+  let match = await findMatchingTaskByStatus(studentId, text, targetStatus)
+
+  // "reopen that task" / "mark it done" have no title text to fuzzy-match —
+  // fall back to whatever task was last touched, if its status still fits.
+  if (!match && lastTaskTouched && lastTaskTouched.status === targetStatus) {
+    match = { id: lastTaskTouched.id, title: lastTaskTouched.title, confidence: 1 }
+  }
+
+  if (!match) {
+    const msg = wantsComplete
+      ? "I couldn't find an open task close to that — check your Tasks page?"
+      : "I couldn't find a completed task close to that — check your Tasks page?"
+    setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: msg, time: timeNow() }])
+    return true
+  }
+
+  try {
+    await toggleTaskStatus(match.id, targetStatus)
+  } catch (err) {
+    console.error('Failed to toggle task status:', err.message, err)
+    setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: "I tried to update that task but something went wrong — mind trying again?", time: timeNow() }])
+    return true
+  }
+
+  const newStatus = wantsComplete ? 'done' : 'todo'
+  setLastTaskTouched({ id: match.id, title: match.title, status: newStatus })
+
+  const confirmText = wantsComplete
+    ? `Checked off "${match.title}" — nice work.`
+    : `Reopened "${match.title}".`
+
+  setItems((prev) => [...prev, { id: nextId(), kind: 'assistant', content: confirmText, time: timeNow() }])
+  notify.success(wantsComplete ? 'Task completed' : 'Task reopened')
+  return true
+}
 
   async function handleConfirmRemoval(item) {
   if (item.target === 'portfolio') {
@@ -408,11 +492,13 @@ async function maybeSaveOpportunityFromChat(text) {
     setItems((prev) => [...prev, userItem])
     saveMessage('user', text)
 
-    const handledRemoval =
+  const handledRemoval =
   (await maybeOfferPortfolioRemoval(text)) ||
   (await maybeOfferTaskRemoval(text)) ||
+  (await maybeToggleTaskCompletion(text)) ||
   (await maybeOfferOpportunityRemoval(text)) ||
   (await maybeSaveOpportunityFromChat(text)) ||
+  (await maybeAnswerOpportunitiesQuery(text)) ||
   (await maybeApplyProfileCorrection(text))
 if (handledRemoval) return
     const reminderCreated = await maybeCreateReminder(text)

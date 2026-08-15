@@ -1,15 +1,26 @@
-import { supabase } from './supabase.js'
 import { findBestMatch } from './fuzzyMatch.js'
-import { getOpportunities, saveOpportunity, unsaveOpportunity, getSavedOpportunities } from './opportunities.js'
+import {
+  getOpportunities,
+  saveOpportunity,
+  unsaveOpportunity,
+  getSavedOpportunities,
+  getOpportunityApplications,
+} from './opportunities.js'
 
 const REMOVE_OPP_INTENT = /\b(remove|delete|unsave)\b.*\b(from (my )?opportunities|opportunity)\b/i
 const SAVE_OPP_INTENT = /\bsave\b.*\bopportunity\b|\badd\b.*\bopportunity\b/i
+const VIEW_OPP_INTENT = /\b(what|which|show|list).*(opportunit|competition|scholarship|program)/i
 
 export function detectRemoveOpportunityIntent(text) {
   return REMOVE_OPP_INTENT.test(text)
 }
+
 export function detectSaveOpportunityIntent(text) {
   return SAVE_OPP_INTENT.test(text)
+}
+
+export function detectViewOpportunitiesIntent(text) {
+  return VIEW_OPP_INTENT.test(text)
 }
 
 export async function findMatchingSavedOpportunity(studentId, text) {
@@ -32,4 +43,10 @@ export async function removeSavedOpportunity(savedId) {
 
 export async function addOpportunity(studentId, opportunityId) {
   return saveOpportunity(studentId, opportunityId)
+}
+
+// Reuses getOpportunityApplications, which already returns opportunity name,
+// deadline, and checklist progress — no need for a separate summary query.
+export async function getOpportunitiesSummary(studentId) {
+  return getOpportunityApplications(studentId)
 }

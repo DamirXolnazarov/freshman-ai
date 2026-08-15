@@ -8,12 +8,14 @@ import { notify } from '../lib/toast.js'
 import DangerZoneCard from '../components/profile/DangerZoneCard.jsx'
 import { supabase } from '../lib/supabase.js'
 import { enrollmentYearFromGrade } from '../lib/groq.js'
+import { computeCompleteness } from '../lib/profileCompleteness.js'
 
 const ACTIVITY_TAGS = ['Leadership', 'Technology', 'Community', 'Academic', 'Arts', 'Athletics', 'Service']
 
 export default function ProfilePage({ onNavigate, studentId }) {
   const [studentName, setStudentName] = useState('')
   const [profile, setProfile] = useState(null)
+  const [activitiesCount, setActivitiesCount] = useState(0)
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
 
@@ -24,9 +26,10 @@ export default function ProfilePage({ onNavigate, studentId }) {
     if (!studentId) return
     async function load() {
       try {
-        const [{ data: student }, { data: prof }] = await Promise.all([
+        const [{ data: student }, { data: prof }, { count }] = await Promise.all([
           supabase.from('students').select('name').eq('id', studentId).single(),
           supabase.from('student_profile').select('*').eq('student_id', studentId).maybeSingle(),
+          supabase.from('portfolio_items').select('*', { count: 'exact', head: true }).eq('student_id', studentId),
         ])
         setStudentName(student?.name || '')
         setProfile(
@@ -36,6 +39,7 @@ export default function ProfilePage({ onNavigate, studentId }) {
             gpa: '', sat_score: '', act_score: '', enrollment_year: null,
           }
         )
+        setActivitiesCount(count || 0)
       } catch (err) {
         console.error('Failed to load profile:', err)
         setProfile({
@@ -100,6 +104,7 @@ export default function ProfilePage({ onNavigate, studentId }) {
     } else {
       notify.success(`${activityDraft.title} added to your portfolio`)
       setActivityDraft({ title: '', summary: '', impact: '', tags: [] })
+      setActivitiesCount((prev) => prev + 1)
     }
   }
 
@@ -121,9 +126,15 @@ export default function ProfilePage({ onNavigate, studentId }) {
         return y ? y + 4 : null
       })()
 
+  const sidebarStudent = {
+    name: studentName || 'Student',
+    cohort: derivedClassOf ? `Class of ${derivedClassOf}` : 'Cohort not set yet',
+    completeness: computeCompleteness(profile, activitiesCount),
+  }
+
   return (
     <div className="flex h-screen bg-parchment-50">
-      <Sidebar activePage="profile" onNavigate={onNavigate} />
+      <Sidebar activePage="profile" onNavigate={onNavigate} student={sidebarStudent} />
 
       <main className="flex-1 min-w-0 overflow-y-auto px-8 py-7">
         <header>
